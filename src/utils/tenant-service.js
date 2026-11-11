@@ -2,7 +2,7 @@ import sequelize from '../config/database.js';
 import bcrypt from 'bcrypt';
 import logger from './logger.js';
 import User from '../domains/auth/user.model.js';
-import Role from '../domains/auth/role.models.js'; // Fixed path (removed extra 's' if typo, based on your imports)
+import Role from '../domains/auth/role.model.js';
 import Branch from '../domains/store/branch.model.js';
 import InventoryItem from '../domains/inventory/item.model.js'; // Check path
 import Customer from '../domains/customers/customer.model.js'; // Check path

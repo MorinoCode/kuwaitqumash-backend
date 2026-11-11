@@ -30,11 +30,6 @@ const getIndexDefinitions = () => [
     columns: ["fabric_type"],
   },
   {
-    name: "idx_inventory_category",
-    table: "inventory_items",
-    columns: ["category"],
-  },
-  {
     name: "idx_inventory_created_at",
     table: "inventory_items",
     columns: ["created_at"],

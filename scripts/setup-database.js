@@ -23,8 +23,10 @@ import InventoryItem from '../src/domains/inventory/item.model.js';
 import Invoice from '../src/domains/sales/invoice.model.js';
 import InvoiceItem from '../src/domains/sales/invoice-item.model.js';
 import InvoicePayment from '../src/domains/sales/payment.model.js';
-import OldInvoice from '../src/domains/sales/old-invoice.model.js';
-import OldGold from '../src/domains/old-gold/old-gold.model.js';
+import Refund from '../src/domains/sales/refund.model.js';
+import RefundItem from '../src/domains/sales/refund-item.model.js';
+import RefundPayment from '../src/domains/sales/refund-payment.model.js';
+import CustomInventoryOption from '../src/domains/inventory/custom-option.model.js';
 
 // Setup relationships (same as in app.js)
 User.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
@@ -45,9 +47,6 @@ InvoiceItem.belongsTo(Invoice, { foreignKey: 'invoice_id' });
 Invoice.hasMany(InvoicePayment, { foreignKey: 'invoice_id', as: 'payments' });
 InvoicePayment.belongsTo(Invoice, { foreignKey: 'invoice_id' });
 
-OldGold.belongsTo(Customer, { foreignKey: 'customer_id', as: 'customer' });
-OldGold.belongsTo(User, { foreignKey: 'created_by', as: 'buyer' });
-OldGold.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
 
 InventoryItem.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
 Branch.hasMany(InventoryItem, { foreignKey: 'branch_id' });
@@ -133,8 +132,10 @@ const setupDatabase = async () => {
         await Invoice.schema(schema).sync({ force: false, alter: true });
         await InvoiceItem.schema(schema).sync({ force: false, alter: true });
         await InvoicePayment.schema(schema).sync({ force: false, alter: true });
-        await OldInvoice.schema(schema).sync({ force: false, alter: true });
-        await OldGold.schema(schema).sync({ force: false, alter: true });
+        await CustomInventoryOption.schema(schema).sync({ force: false, alter: true });
+        await Refund.schema(schema).sync({ force: false, alter: true });
+        await RefundItem.schema(schema).sync({ force: false, alter: true });
+        await RefundPayment.schema(schema).sync({ force: false, alter: true });
         logger.info('Schema synced', { component: 'setup-database', schema });
       }
     } else {

@@ -21,6 +21,11 @@ const RefundItem = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: false,
     },
+    meters: {
+      type: DataTypes.DECIMAL(12, 3),
+      allowNull: false,
+      defaultValue: 0,
+    },
     quantity_refunded: {
       type: DataTypes.INTEGER,
       allowNull: false,

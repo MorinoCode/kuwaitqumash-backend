@@ -278,6 +278,7 @@ export const createRefund = async (req, res) => {
           refund_id: refund.id,
           invoice_item_id: it.invoice_item_id,
           inventory_item_id: it.inventory_item_id,
+          meters: it.meters,
           quantity_refunded: it.quantity_refunded,
           amount_refunded: it.amount_refunded,
         },
