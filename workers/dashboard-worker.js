@@ -324,7 +324,7 @@ const aggregateOwnerDashboard = async (tenant) => {
       attributes: [
         "id",
         "item_name",
-        "category",
+        "pattern",
         "quantity",
         "min_stock_level",
       ],
@@ -647,7 +647,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       attributes: [
         "id",
         "item_name",
-        "category",
+        "pattern",
         "quantity",
         "min_stock_level",
       ],
