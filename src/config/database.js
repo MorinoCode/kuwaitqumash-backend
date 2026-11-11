@@ -17,9 +17,11 @@ const dbPassword =
     ? String(process.env.DB_PASS)
     : "";
 const dbHost = process.env.DB_HOST ? String(process.env.DB_HOST) : "localhost";
+const dbPort = process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432;
 
 const sequelize = new Sequelize(dbName, dbUser, dbPassword, {
   host: dbHost,
+  port: dbPort,
   dialect: "postgres",
   logging: false,
   pool: {

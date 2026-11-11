@@ -95,6 +95,7 @@ export const addItem = async (req, res) => {
 
     const newItem = await InventoryItem.schema(schema).create({
       fabric_type,
+      color: req.body.color ? String(req.body.color).trim() : null,
       item_name: sanitizedItemName,
       item_name_ar: sanitizedItemNameAr,
       pattern: pattern ? pattern.trim() : null,

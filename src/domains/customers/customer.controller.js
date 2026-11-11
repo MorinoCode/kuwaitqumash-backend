@@ -11,9 +11,9 @@ import { saveImage, deleteImage } from "../../utils/fileUpload.js";
 import { normalizeToLatinDigits } from "../../utils/normalizeNumbers.js";
 import logger from "../../utils/logger.js";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
 
 export const createCustomer = async (req, res) => {
   try {
@@ -607,6 +607,12 @@ export const deleteCustomer = async (req, res) => {
 };
 
 export const scanIDCard = async (req, res) => {
+  if (!openai) {
+    return res.status(503).json({
+      message: "ID scanning is not configured on this server.",
+    });
+  }
+
   try {
     if (!req.file) {
       return res.status(400).json({ message: "No image uploaded" });
