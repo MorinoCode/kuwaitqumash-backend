@@ -5,11 +5,23 @@ import logger from "./logger.js";
 
 sharp.cache(false);
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+const cloudinaryConfigured = Boolean(
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET
+);
+
+if (cloudinaryConfigured) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
+} else {
+  logger.warn("Cloudinary is not configured, image uploads are skipped.", {
+    component: "fileUpload",
+  });
+}
 
 const ROOT = process.env.CLOUDINARY_FOLDER || "kuwaitqumash";
 
@@ -35,6 +47,13 @@ const buildPath = (store, folderType, subPath) => {
 
 export const saveImage = async (file, folderType, subFolder, store) => {
   if (!file) return null;
+
+  if (!cloudinaryConfigured) {
+    try {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    } catch { void 0; }
+    return null;
+  }
 
   const storeVal = store || "default";
   const {

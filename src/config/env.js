@@ -7,9 +7,6 @@ const REQUIRED = [
   "DB_NAME",
   "DB_USER",
   "DB_PASS",
-  "CLOUDINARY_CLOUD_NAME",
-  "CLOUDINARY_API_KEY",
-  "CLOUDINARY_API_SECRET",
 ];
 
 const OPTIONAL_WITH_DEFAULTS = {
@@ -48,8 +45,11 @@ if (
   process.env.CLOUDINARY_CLOUD_NAME &&
   (!process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET)
 ) {
-
   console.warn(
     "[env] Warning: Cloudinary cloud name provided but API key/secret missing."
   );
+}
+
+if (!process.env.CLOUDINARY_CLOUD_NAME) {
+  console.warn("[env] Cloudinary is not configured: image uploads are disabled.");
 }
