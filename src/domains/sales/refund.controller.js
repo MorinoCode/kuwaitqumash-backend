@@ -11,6 +11,7 @@ import Customer from "../customers/customer.model.js";
 import User from "../auth/user.model.js";
 import Branch from "../store/branch.model.js";
 import logger from "../../utils/logger.js";
+import { applyRefundToStock } from "../../utils/stock.js";
 
 /**
  * Get invoice with items, including refunded quantities per item
@@ -216,6 +217,7 @@ export const createRefund = async (req, res) => {
       validatedItems.push({
         invoice_item_id: invItem.id,
         inventory_item_id: invItem.inventory_item_id,
+        meters: parseFloat(invItem.meters) || 0,
         quantity_refunded: it.quantity_refunded,
         amount_refunded: amount,
       });
@@ -287,9 +289,14 @@ export const createRefund = async (req, res) => {
         lock: t.LOCK.UPDATE,
       });
       if (invItem) {
-        const newQty = parseInt(invItem.quantity, 10) + it.quantity_refunded;
-        invItem.quantity = newQty;
-        if (invItem.status === "Sold" && newQty > 0) {
+        const restored = applyRefundToStock(
+          invItem,
+          it.meters,
+          it.quantity_refunded,
+        );
+        invItem.quantity = restored.quantity;
+        invItem.length_m = restored.length_m;
+        if (invItem.status !== "In Stock" && restored.quantity > 0) {
           invItem.status = "In Stock";
         }
         await invItem.save({ transaction: t });

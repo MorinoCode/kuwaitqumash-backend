@@ -8,6 +8,7 @@ import InventoryItem from "../inventory/item.model.js";
 import Customer from "../customers/customer.model.js";
 import User from "../auth/user.model.js";
 import logger from "../../utils/logger.js";
+import { applySaleToStock } from "../../utils/stock.js";
 import {
   generateInvoicePDF,
   generateSalesExcelBuffer,
@@ -103,18 +104,21 @@ export const createSale = async (req, res) => {
       }
 
       const quantity = Math.max(1, parseInt(item.quantity, 10) || 1);
-      const available = parseInt(inventoryItem.quantity, 10) ?? 0;
-      if (available < quantity) {
-        throw new Error(
-          `Not enough stock for item ${inventoryItem.item_name || item.id}. Available: ${available}, requested: ${quantity}.`,
-        );
-      }
 
       // Billable length in meters for this line (per roll/unit)
       const meters = parseFloat(item.meters || inventoryItem.length_m);
       if (isNaN(meters) || meters <= 0) {
         throw new Error(
           "Invalid length (meters) for item " + (item.id || inventoryItem.id),
+        );
+      }
+
+      const stock = applySaleToStock(inventoryItem, meters, quantity);
+      if (!stock.ok) {
+        throw new Error(
+          stock.reason === "insufficient"
+            ? `Not enough stock for item ${inventoryItem.item_name || item.id}. Available: ${stock.availableMeters.toFixed(3)} m, requested: ${stock.soldMeters.toFixed(3)} m.`
+            : `Invalid length (meters) for item ${item.id || inventoryItem.id}`,
         );
       }
 
@@ -162,10 +166,6 @@ export const createSale = async (req, res) => {
       totalDiscount += lineDiscount;
       grandTotal += itemTotal;
 
-
-      totalDiscount += discountLine;
-      grandTotal += itemTotal;
-
       invoiceItemsData.push({
         inventory_item_id: inventoryItem.id,
         quantity,
@@ -182,10 +182,9 @@ export const createSale = async (req, res) => {
         total_price: itemTotal,
       });
 
-      inventoryItem.quantity = Math.max(0, available - quantity);
-      if (inventoryItem.quantity === 0) {
-        inventoryItem.status = "Sold";
-      }
+      inventoryItem.quantity = stock.quantity;
+      inventoryItem.length_m = stock.length_m;
+      inventoryItem.status = stock.status;
       await inventoryItem.save({ transaction: t });
     }
 
