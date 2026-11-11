@@ -38,7 +38,7 @@ const WhatsappConfig = sequelize.define('WhatsappConfig', {
   }
 }, {
   tableName: 'whatsapp_configs',
-  schema: 'public', 
+  schema: 'public',
   timestamps: true,
   underscored: true,
   indexes: [

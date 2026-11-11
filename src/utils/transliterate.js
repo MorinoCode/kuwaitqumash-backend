@@ -1,8 +1,3 @@
-/**
- * Transliterate Arabic (and common Persian) letters to Latin ASCII
- * so barcodes and slugs stay CODE128-safe and URL-safe.
- * Used when building barcode from custom category/subcategory/metal.
- */
 const ARABIC_TO_LATIN = {
   ا: "a",
   أ: "a",
@@ -70,12 +65,6 @@ const ARABIC_TO_LATIN = {
   "۹": "9",
 };
 
-/**
- * Convert string to ASCII-safe Latin (for barcode / slug).
- * Arabic/Persian letters are transliterated; other non-ASCII are stripped.
- * @param {string} str - User input (e.g. category, subcategory, metal name)
- * @returns {string} - ASCII-only string (A-Z, a-z, 0-9, space, dash, underscore)
- */
 export function transliterateToAscii(str) {
   if (str == null || typeof str !== "string") return "";
   let out = "";
@@ -88,18 +77,11 @@ export function transliterateToAscii(str) {
     } else if (/[a-zA-Z0-9\s\-_]/.test(char)) {
       out += char;
     }
-    // else: skip other non-ASCII
+
   }
   return out.replace(/\s+/g, " ").trim();
 }
 
-/**
- * Get a short CODE128-safe code from a label (e.g. category name).
- * Transliterates, keeps only A-Z0-9, takes first maxLen chars, pads with X if needed.
- * @param {string} label - e.g. category or subcategory
- * @param {number} maxLen - default 3
- * @returns {string} - e.g. "GEN", "WAT", "NEW"
- */
 export function toBarcodeSafeCode(label, maxLen = 3) {
   const t = transliterateToAscii(label || "");
   const safe = t

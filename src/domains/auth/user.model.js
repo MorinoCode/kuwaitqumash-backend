@@ -22,7 +22,7 @@ const User = sequelize.define('User', {
     allowNull: false
   },
   role: {
-    type: DataTypes.STRING, // Changed from ENUM to STRING to fix Schema Sync issues
+    type: DataTypes.STRING,
     defaultValue: 'sales_man',
     validate: {
       isIn: [['store_owner', 'branch_manager', 'sales_man']]

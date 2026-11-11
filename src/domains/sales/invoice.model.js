@@ -1,12 +1,6 @@
 import { DataTypes } from 'sequelize';
 import sequelize from '../../config/database.js';
 
-/**
- * Fabric sale invoice. Totals are in meters and money, never weight/labor.
- *   total_meters   -> sum of sold meters
- *   total_discount -> sum of line + invoice discounts
- *   total_amount   -> payable amount
- */
 const Invoice = sequelize.define('Invoice', {
   id: {
     type: DataTypes.INTEGER,

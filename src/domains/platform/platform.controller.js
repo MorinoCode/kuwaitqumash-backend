@@ -4,7 +4,7 @@ import logger from "../../utils/logger.js";
 
 export const registerStore = async (req, res) => {
   try {
-    let { store_name, owner_name, phone, username, password } = req.body; // validated by Zod
+    let { store_name, owner_name, phone, username, password } = req.body;
     store_name = store_name.toLowerCase();
     username = username.toLowerCase();
 

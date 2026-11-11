@@ -12,7 +12,6 @@ export const addItem = async (req, res) => {
     const schema = req.tenant.db_schema;
     const tenantId = req.tenant.id;
 
-    // Log tenant and branch info for debugging
     logger.info("Adding inventory item", {
       component: "inventory",
       schema,
@@ -38,7 +37,6 @@ export const addItem = async (req, res) => {
       min_stock_level,
     } = req.body;
 
-    // Input Validation & Sanitization
     if (
       !fabric_type ||
       typeof fabric_type !== "string" ||
@@ -46,13 +44,6 @@ export const addItem = async (req, res) => {
     ) {
       return res.status(400).json({ message: "Fabric type is required." });
     }
-
-    // Item name is now optional - can be generated from pattern
-    // if (!item_name || typeof item_name !== 'string' || item_name.trim().length < 1) {
-    //   return res.status(400).json({ message: 'Item name is required.' });
-    // }
-
-    // Pattern (design) is optional for fabric items.
 
     const parsedLength = parseFloat(
       normalizeToLatinDigits(String(length_m ?? ""))
@@ -72,13 +63,11 @@ export const addItem = async (req, res) => {
         .json({ message: "Valid cost per meter is required." });
     }
 
-    // Generate item_name from pattern if not provided
     let finalItemName = item_name;
     if (!finalItemName || finalItemName.trim().length === 0) {
       finalItemName = pattern || `${fabric_type} Item`;
     }
 
-    // Sanitize inputs
     const sanitizedItemName = finalItemName.trim().substring(0, 255);
     const sanitizedItemNameAr = item_name_ar
       ? item_name_ar.trim().substring(0, 255)
@@ -135,7 +124,6 @@ export const addItem = async (req, res) => {
       status: "In Stock",
     });
 
-    // Optimize response: Return only essential fields (exclude large fields like images)
     const responseData = {
       id: newItem.id,
       barcode: newItem.barcode,
@@ -149,7 +137,7 @@ export const addItem = async (req, res) => {
       branch_id: newItem.branch_id,
       createdAt: newItem.createdAt,
       updatedAt: newItem.updatedAt,
-      // Include thumbnail (first image) only
+
       thumbnail:
         newItem.images && newItem.images.length > 0 ? newItem.images[0] : null,
     };
@@ -186,7 +174,6 @@ export const getInventory = async (req, res) => {
       limit = 50,
     } = req.query;
 
-    // Default: In Stock. Optional ?status=Sold for "Sold out" tab.
     const listStatus = statusFilter === "Sold" ? "Sold" : "In Stock";
     const whereClause = { status: listStatus };
 
@@ -197,7 +184,7 @@ export const getInventory = async (req, res) => {
         branch_ids !== "null" &&
         branch_ids !== "undefined"
       ) {
-        // Multiple branch IDs (comma-separated)
+
         const branchIdArray = branch_ids
           .split(",")
           .map((id) => parseInt(id.trim()))
@@ -210,11 +197,11 @@ export const getInventory = async (req, res) => {
         branch_id !== "null" &&
         branch_id !== "undefined"
       ) {
-        // Single branch ID (backward compatibility)
+
         whereClause.branch_id = branch_id;
       }
     } else {
-      // Non-owners restricted to their branch
+
       whereClause.branch_id = req.user.branch_id;
     }
 
@@ -226,34 +213,30 @@ export const getInventory = async (req, res) => {
       whereClause.country_of_origin = country_of_origin;
 
     if (search) {
-      // Optimized search: Use prefix matching first (faster with text_pattern_ops indexes)
-      // Then fallback to contains matching for better results
+
       const searchTerm = search.trim();
 
-      // Check if search looks like a barcode (alphanumeric, possibly with dashes)
       const isBarcodeLike = /^[A-Z0-9-]+$/i.test(searchTerm);
 
       if (isBarcodeLike && searchTerm.length >= 5) {
-        // For barcode-like searches, prioritize prefix match (uses index efficiently)
-        // Prefix match is much faster than contains match
+
         whereClause[Op.or] = [
-          { barcode: { [Op.iLike]: `${searchTerm}%` } }, // Prefix match (uses index)
-          { barcode: { [Op.iLike]: `%${searchTerm}%` } }, // Contains match (fallback)
-          { item_name: { [Op.iLike]: `${searchTerm}%` } }, // Prefix match
-          { item_name: { [Op.iLike]: `%${searchTerm}%` } }, // Contains match
+          { barcode: { [Op.iLike]: `${searchTerm}%` } },
+          { barcode: { [Op.iLike]: `%${searchTerm}%` } },
+          { item_name: { [Op.iLike]: `${searchTerm}%` } },
+          { item_name: { [Op.iLike]: `%${searchTerm}%` } },
           { item_name_ar: { [Op.iLike]: `${searchTerm}%` } },
           { item_name_ar: { [Op.iLike]: `%${searchTerm}%` } },
           { description: { [Op.iLike]: `%${searchTerm}%` } },
         ];
       } else {
-        // For text searches, use prefix matching first (faster with indexes)
-        // Prefix matching works better with text_pattern_ops indexes
+
         whereClause[Op.or] = [
-          // Prefix matches first (use indexes efficiently)
+
           { item_name: { [Op.iLike]: `${searchTerm}%` } },
           { item_name_ar: { [Op.iLike]: `${searchTerm}%` } },
           { barcode: { [Op.iLike]: `${searchTerm}%` } },
-          // Contains matches (fallback for better coverage)
+
           { item_name: { [Op.iLike]: `%${searchTerm}%` } },
           { item_name_ar: { [Op.iLike]: `%${searchTerm}%` } },
           { barcode: { [Op.iLike]: `%${searchTerm}%` } },
@@ -262,36 +245,31 @@ export const getInventory = async (req, res) => {
       }
     }
 
-    // Parse pagination parameters
     const MAX_LIMIT = parseInt(process.env.MAX_PAGINATION_LIMIT) || 200;
     const pageNum = parseInt(page, 10) || 1;
     const limitNum = Math.min(parseInt(limit, 10) || 50, MAX_LIMIT);
     const offset = (pageNum - 1) * limitNum;
 
-    // Optimize count query: Use estimated count for first page without search
-    // For search queries or pagination, we need exact count
     let totalCount;
     const needsExactCount = search || pageNum > 1;
 
     if (needsExactCount) {
-      // For search queries or pagination, we need exact count
+
       totalCount = await InventoryItem.schema(schema).count({
         where: whereClause,
       });
     } else {
-      // For first page without search, use estimated count approach
-      // Fetch items first to check if there are more (faster than count)
+
       const items = await InventoryItem.schema(schema).findAll({
         where: whereClause,
         order: [["createdAt", "DESC"]],
-        limit: limitNum + 1, // Fetch one extra to check if there are more
+        limit: limitNum + 1,
         offset: 0,
       });
 
-      // Transform items to include only first image (thumbnail) for list view
       const optimizedItems = items.map((item) => {
         const itemData = item.toJSON();
-        // Keep only first image as thumbnail for list view
+
         if (
           itemData.images &&
           Array.isArray(itemData.images) &&
@@ -301,19 +279,16 @@ export const getInventory = async (req, res) => {
         } else {
           itemData.thumbnail = null;
         }
-        // Remove full images array to reduce payload
+
         delete itemData.images;
         return itemData;
       });
 
-      // If we got more than limit, there are more pages
       const hasMore = optimizedItems.length > limitNum;
       const actualItems = optimizedItems.slice(0, limitNum);
 
-      // For estimated count: if hasMore, estimate higher number
-      // Otherwise use actual count
       if (hasMore) {
-        // Estimate: assume at least 2 pages worth
+
         totalCount = limitNum * 2;
       } else {
         totalCount = actualItems.length;
@@ -336,8 +311,6 @@ export const getInventory = async (req, res) => {
       });
     }
 
-    // Optimize: Fetch only necessary attributes for list view
-    // Include only first image (thumbnail) to reduce payload size
     const items = await InventoryItem.schema(schema).findAll({
       where: whereClause,
       order: [["createdAt", "DESC"]],
@@ -345,10 +318,9 @@ export const getInventory = async (req, res) => {
       offset: offset,
     });
 
-    // Transform items to include only first image (thumbnail) for list view
     const optimizedItems = items.map((item) => {
       const itemData = item.toJSON();
-      // Keep only first image as thumbnail for list view
+
       if (
         itemData.images &&
         Array.isArray(itemData.images) &&
@@ -358,13 +330,10 @@ export const getInventory = async (req, res) => {
       } else {
         itemData.thumbnail = null;
       }
-      // Remove full images array to reduce payload (frontend can fetch full details if needed)
+
       delete itemData.images;
       return itemData;
     });
-
-    // Note: Price filtering (price_min, price_max) should be done in frontend
-    // because it requires live rates calculation which is complex in backend
 
     const totalPages = Math.ceil(totalCount / limitNum);
 
@@ -500,7 +469,6 @@ export const updateItem = async (req, res) => {
       status,
     };
 
-    // Sanitize string inputs
     if (updateData.item_name)
       updateData.item_name = updateData.item_name.trim().substring(0, 255);
     if (updateData.item_name_ar)
@@ -529,7 +497,6 @@ export const updateItem = async (req, res) => {
       updateData.images = combinedImages;
     }
 
-    // When restocking a sold-out item (quantity 0 -> > 0), set status back to In Stock
     const newQty =
       updateData.quantity !== undefined
         ? parseInt(updateData.quantity, 10)
@@ -540,7 +507,6 @@ export const updateItem = async (req, res) => {
 
     await item.update(updateData);
 
-    // Reload to get updated data
     await item.reload();
 
     res.json({
@@ -618,7 +584,6 @@ export const checkItemDeletable = async (req, res) => {
         .json({ message: "Access denied.", deletable: false });
     }
 
-    // Check if item is referenced in any invoice items
     const invoiceItemCount = await InvoiceItem.schema(schema).count({
       where: { inventory_item_id: id },
     });
@@ -659,7 +624,6 @@ export const deleteItem = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    // Check if item is referenced in any invoice items
     const invoiceItemCount = await InvoiceItem.schema(schema).count({
       where: { inventory_item_id: id },
     });
@@ -672,13 +636,12 @@ export const deleteItem = async (req, res) => {
       });
     }
 
-    // Delete associated images
     if (item.images && Array.isArray(item.images) && item.images.length > 0) {
       for (const img of item.images) {
         try {
           await deleteImage(img);
         } catch (imgError) {
-          // Log but don't fail deletion if image deletion fails
+
           logger.warn("Failed to delete image during item deletion", {
             component: "inventory",
             imageUrl: img,
@@ -697,7 +660,6 @@ export const deleteItem = async (req, res) => {
       stack: error?.stack,
     });
 
-    // Check for foreign key constraint error
     if (
       error.name === "SequelizeForeignKeyConstraintError" ||
       error.message?.includes("foreign key constraint")
@@ -714,13 +676,11 @@ export const deleteItem = async (req, res) => {
   }
 };
 
-// Get custom inventory options (metals, categories, subcategories)
 export const getCustomOptions = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
     const { type, fabric_type, category } = req.query;
 
-    // Log tenant info for debugging
     logger.info("Getting custom options", {
       component: "inventory",
       schema,
@@ -730,7 +690,6 @@ export const getCustomOptions = async (req, res) => {
       category,
     });
 
-    // Build WHERE clause dynamically
     let whereConditions = [];
     const queryParams = [];
     let paramIndex = 1;
@@ -739,12 +698,11 @@ export const getCustomOptions = async (req, res) => {
       whereConditions.push(`type = $${paramIndex++}`);
       queryParams.push(type);
 
-      // For metal type, fabric_type and category should be NULL
       if (type === "metal") {
         whereConditions.push(`fabric_type IS NULL`);
         whereConditions.push(`category IS NULL`);
       }
-      // For category type, category should be NULL but fabric_type should match
+
       else if (type === "category") {
         whereConditions.push(`category IS NULL`);
         if (fabric_type) {
@@ -752,7 +710,7 @@ export const getCustomOptions = async (req, res) => {
           queryParams.push(fabric_type);
         }
       }
-      // For pattern type, both fabric_type and category should match
+
       else if (type === "pattern") {
         if (fabric_type) {
           whereConditions.push(`fabric_type = $${paramIndex++}`);
@@ -764,7 +722,7 @@ export const getCustomOptions = async (req, res) => {
         }
       }
     } else {
-      // If type is not specified, filter by provided parameters
+
       if (fabric_type) {
         whereConditions.push(`fabric_type = $${paramIndex++}`);
         queryParams.push(fabric_type);
@@ -780,15 +738,12 @@ export const getCustomOptions = async (req, res) => {
         ? `WHERE ${whereConditions.join(" AND ")}`
         : "";
 
-    // CRITICAL: Use transaction with SET LOCAL to ensure tenant isolation
-    // SET LOCAL only affects the current transaction, preventing connection pooling issues
     const t = await sequelize.transaction();
     try {
       await sequelize.query(`SET LOCAL search_path TO "${schema}", public`, {
         transaction: t,
       });
 
-      // Use raw query with explicit schema to ensure tenant isolation
       const query = `
         SELECT id, type, fabric_type, category, name, name_ar
         FROM "${schema}".custom_inventory_options
@@ -804,7 +759,6 @@ export const getCustomOptions = async (req, res) => {
 
       await t.commit();
 
-      // results is already an array (not [results, metadata])
       const options = Array.isArray(results) ? results : [];
 
       logger.info("Custom options fetched", {
@@ -834,13 +788,11 @@ export const getCustomOptions = async (req, res) => {
   }
 };
 
-// Save custom inventory option
 export const saveCustomOption = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
     const { type, fabric_type, category, name, name_ar } = req.body;
 
-    // Log tenant info for debugging
     logger.info("Saving custom option", {
       component: "inventory",
       schema,
@@ -855,14 +807,12 @@ export const saveCustomOption = async (req, res) => {
       return res.status(400).json({ message: "Type and name are required." });
     }
 
-    // Validate type
     if (!["metal", "category", "pattern"].includes(type)) {
       return res.status(400).json({
         message: "Invalid type. Must be metal, category, or pattern.",
       });
     }
 
-    // Validate required fields based on type
     if (type === "category" && !fabric_type) {
       return res
         .status(400)
@@ -877,15 +827,12 @@ export const saveCustomOption = async (req, res) => {
     const trimmedName = name.trim();
     const trimmedNameAr = name_ar?.trim() || null;
 
-    // CRITICAL: Use transaction with SET LOCAL to ensure tenant isolation
-    // SET LOCAL only affects the current transaction, preventing connection pooling issues
     const t = await sequelize.transaction();
     try {
       await sequelize.query(`SET LOCAL search_path TO "${schema}", public`, {
         transaction: t,
       });
 
-      // Check if option already exists using raw query with explicit schema
       const checkQuery = `
         SELECT id, type, fabric_type, category, name, name_ar
         FROM "${schema}".custom_inventory_options
@@ -915,9 +862,8 @@ export const saveCustomOption = async (req, res) => {
         });
       }
 
-      // Create new custom option using raw query with explicit schema
       const insertQuery = `
-        INSERT INTO "${schema}".custom_inventory_options 
+        INSERT INTO "${schema}".custom_inventory_options
           (type, fabric_type, category, name, name_ar, created_by, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
         RETURNING id, type, fabric_type, category, name, name_ar, created_by, created_at, updated_at

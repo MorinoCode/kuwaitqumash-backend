@@ -1,8 +1,3 @@
-/**
- * Structured logger: outputs JSON with level, message, timestamp, and optional context.
- * Use for app startup, health checks, and error middleware.
- */
-
 function formatLog(level, message, context = {}) {
   const entry = {
     level,

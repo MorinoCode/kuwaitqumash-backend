@@ -20,16 +20,7 @@ import {
 import { Op } from "sequelize";
 import Branch from "../store/branch.model.js";
 
-// ... createSale function (same as before) ...
-// (Omitting createSale code block to save space as requested, assuming no changes there from previous step unless specified)
-// If you need the full file again including createSale, let me know.
-// Below are the updated getInvoices and getInvoiceById functions.
-
 export const createSale = async (req, res) => {
-  // ... (Keep existing createSale logic) ...
-  // Placeholder to indicate this function remains unchanged from the previous correct version provided.
-  // If you need the full code block for this file again, I will include it.
-  // For now, I will provide the FULL file content to be safe as per instructions.
 
   const schema = req.tenant.db_schema;
   let user = null;
@@ -54,11 +45,8 @@ export const createSale = async (req, res) => {
     });
     const { customer_id, items, payments, notes, branch_id } = req.body;
 
-    // Use branch_id from request body (active branch) if provided, otherwise use user's branch_id
     const invoiceBranchId = branch_id || req.user.branch_id || 1;
 
-    // Enhanced validation and logging
-    // Log invoice creation details
     logger.info("Creating invoice", {
       component: "sales",
       customer_id,
@@ -91,7 +79,6 @@ export const createSale = async (req, res) => {
       );
       if (!inventoryItem) throw new Error(`Item with ID ${item.id} not found.`);
 
-      // Validate: non-owners can only use items from their own branch or the invoice branch
       if (
         req.user.role !== "store_owner" &&
         inventoryItem.branch_id !== req.user.branch_id &&
@@ -105,7 +92,6 @@ export const createSale = async (req, res) => {
 
       const quantity = Math.max(1, parseInt(item.quantity, 10) || 1);
 
-      // Billable length in meters for this line (per roll/unit)
       const meters = parseFloat(item.meters || inventoryItem.length_m);
       if (isNaN(meters) || meters <= 0) {
         throw new Error(
@@ -193,7 +179,6 @@ export const createSale = async (req, res) => {
       return acc + (isNaN(amount) ? 0 : amount);
     }, 0);
 
-    // Log for debugging
     logger.info("Payment validation", {
       component: "sales",
       totalPaid,
@@ -202,7 +187,6 @@ export const createSale = async (req, res) => {
       tolerance: 0.01,
     });
 
-    // Dynamic tolerance: 0.1% of total or minimum 0.01 KWD to account for floating point precision issues
     const tolerance = Math.max(0.01, grandTotal * 0.001);
     const paymentDifference = Math.abs(totalPaid - grandTotal);
 
@@ -212,7 +196,6 @@ export const createSale = async (req, res) => {
       );
     }
 
-    // Validate that totalPaid and grandTotal are valid numbers
     if (isNaN(totalPaid) || isNaN(grandTotal)) {
       throw new Error(
         "Invalid payment calculation. Please check item prices and payment amounts.",
@@ -221,12 +204,12 @@ export const createSale = async (req, res) => {
 
     let invoiceNumber;
     if (invoiceBranchId) {
-      // Check if the column exists safely to avoid aborting the transaction
+
       const [colCheck] = await sequelize.query(
         `SELECT column_name FROM information_schema.columns WHERE table_schema = :schema AND table_name = 'branches' AND column_name = 'next_invoice_sequence'`,
         { replacements: { schema }, transaction: t }
       );
-      
+
       if (colCheck.length === 0) {
         await sequelize.query(
           `ALTER TABLE "${schema}".branches ADD COLUMN next_invoice_sequence INTEGER NOT NULL DEFAULT 1`,
@@ -243,7 +226,7 @@ export const createSale = async (req, res) => {
             transaction: t,
           }
         );
-        
+
         const seqRaw = results[0]?.[0]?.next_invoice_sequence;
         if (!seqRaw) {
           const randomHex = crypto.randomBytes(3).toString('hex').toUpperCase();
@@ -301,7 +284,7 @@ export const createSale = async (req, res) => {
 
     newInvoice.payments = payments;
     let pdfResult = {};
-    // Fetch branch with logo_url using the invoice's branch_id (not user's branch_id)
+
     const invoiceBranch = await Branch.schema(schema).findByPk(
       newInvoice.branch_id,
     );
@@ -325,7 +308,7 @@ export const createSale = async (req, res) => {
         storeSettings,
         branchLogoUrl
       );
-      // Excel update removed - use /sales/report/excel endpoint for Excel generation
+
       if (pdfResult?.localPath) {
         newInvoice.pdf_path = pdfResult.localPath;
         await newInvoice.save();
@@ -338,8 +321,6 @@ export const createSale = async (req, res) => {
       });
     }
 
-    // WhatsApp Logic... (omitted for brevity, same as before)
-
     const fullInvoice = await Invoice.schema(schema).findByPk(newInvoice.id, {
       include: [
         { model: InvoiceItem.schema(schema), as: "items" },
@@ -348,7 +329,6 @@ export const createSale = async (req, res) => {
       ],
     });
 
-    // Get branch WhatsApp invoice enabled setting (use invoice's branch_id)
     let branchWhatsappInvoiceEnabled = false;
     let branchWhatsappInvoiceToStoreEnabled = false;
     let branchWhatsappInvoiceToStorePhone = null;
@@ -372,7 +352,6 @@ export const createSale = async (req, res) => {
       });
     }
 
-    // Auto-send invoice to store owner if enabled
     logger.info("Checking auto-send to store owner", {
       component: "sales",
       invoiceId: newInvoice.id,
@@ -386,10 +365,10 @@ export const createSale = async (req, res) => {
       branchWhatsappInvoiceToStoreEnabled &&
       branchWhatsappInvoiceToStorePhone
     ) {
-      // Normalize and validate phone number
+
       const normalizedStorePhone = branchWhatsappInvoiceToStorePhone.trim();
       if (normalizedStorePhone && normalizedStorePhone.length >= 8) {
-        // Use buffer if available, otherwise try to read from localPath
+
         let pdfBuffer = pdfResult?.buffer;
         if (
           !pdfBuffer &&
@@ -443,7 +422,7 @@ export const createSale = async (req, res) => {
               invoiceId: newInvoice.id,
               branchId: newInvoice.branch_id,
             });
-            // Don't fail the sale if WhatsApp send fails
+
           }
         } else {
           logger.warn("PDF buffer not available for auto-send to store owner", {
@@ -514,11 +493,10 @@ export const getInvoices = async (req, res) => {
 
     const whereClause = {};
 
-    // ✅ Branch Filtering Logic - Support both single and multiple branch IDs
     if (req.user.role === "store_owner") {
-      // Store Owner can filter by branch(es) if provided, otherwise sees all
+
       if (branch_ids && branch_ids !== "null" && branch_ids !== "undefined") {
-        // Multiple branch IDs (comma-separated)
+
         const branchIdArray = branch_ids
           .split(",")
           .map((id) => parseInt(id.trim()))
@@ -531,19 +509,18 @@ export const getInvoices = async (req, res) => {
         branch_id !== "null" &&
         branch_id !== "undefined"
       ) {
-        // Single branch ID (backward compatibility)
+
         whereClause.branch_id = branch_id;
       }
     } else {
-      // Other roles are forced to see only their branch
+
       whereClause.branch_id = req.user.branch_id;
     }
 
-    // Date filtering: support both single date (backward compatibility) and date range
     if (start_date || end_date) {
-      // Parse date strings (YYYY-MM-DD) and set to start/end of day in local timezone
+
       if (start_date && end_date) {
-        // Both dates provided - use Op.between for better performance
+
         const [startYear, startMonth, startDay] = start_date
           .split("-")
           .map(Number);
@@ -552,7 +529,7 @@ export const getInvoices = async (req, res) => {
         const end = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999);
         whereClause.createdAt = { [Op.between]: [start, end] };
       } else {
-        // Only one date provided - use Op.gte or Op.lte
+
         const dateRange = {};
         if (start_date) {
           const [year, month, day] = start_date.split("-").map(Number);
@@ -567,32 +544,27 @@ export const getInvoices = async (req, res) => {
         whereClause.createdAt = dateRange;
       }
     } else if (date) {
-      // Backward compatibility: single date filter
+
       const [year, month, day] = date.split("-").map(Number);
       const startDate = new Date(year, month - 1, day, 0, 0, 0, 0);
       const endDate = new Date(year, month - 1, day, 23, 59, 59, 999);
       whereClause.createdAt = { [Op.between]: [startDate, endDate] };
     }
 
-    // Enhanced search: invoice number, customer name, and phone
-    // Optimized to use prefix matching first (faster with text_pattern_ops indexes)
-    // Handle search separately to avoid Op.or conflicts with branch filtering
     if (search) {
       const searchTerm = search.trim();
 
-      // Use prefix matching first (uses indexes efficiently), then contains as fallback
       const searchConditions = [
-        // Prefix matches (faster with indexes)
+
         { invoice_number: { [Op.iLike]: `${searchTerm}%` } },
         { "$customer.full_name$": { [Op.iLike]: `${searchTerm}%` } },
         { "$customer.phone$": { [Op.iLike]: `${searchTerm}%` } },
-        // Contains matches (fallback for better coverage)
+
         { invoice_number: { [Op.iLike]: `%${searchTerm}%` } },
         { "$customer.full_name$": { [Op.iLike]: `%${searchTerm}%` } },
         { "$customer.phone$": { [Op.iLike]: `%${searchTerm}%` } },
       ];
 
-      // If we already have Op.or (from branch filter), combine with Op.and
       if (whereClause[Op.or]) {
         const branchFilter = { [Op.or]: whereClause[Op.or] };
         delete whereClause[Op.or];
@@ -602,24 +574,19 @@ export const getInvoices = async (req, res) => {
       }
     }
 
-    // Parse pagination parameters
     const MAX_LIMIT = parseInt(process.env.MAX_PAGINATION_LIMIT) || 200;
     const pageNum = parseInt(page, 10) || 1;
     const limitNum = Math.min(parseInt(limit, 10) || 20, MAX_LIMIT);
     const offset = (pageNum - 1) * limitNum;
 
-    // Optimize count query: Avoid includes for count when possible
-    // Count queries with includes are slow - use raw query for better performance
     let totalCount;
 
     if (search) {
-      // For search queries, use optimized raw query with parameterized values
-      // This avoids slow Sequelize count with includes
+
       const searchTerm = `%${search}%`;
       const params = [];
       let paramIndex = 1;
 
-      // Build WHERE conditions
       const conditions = [];
 
       if (whereClause.branch_id) {
@@ -653,7 +620,6 @@ export const getInvoices = async (req, res) => {
         }
       }
 
-      // Add search conditions
       conditions.push(`(
         i.invoice_number ILIKE $${paramIndex++} OR
         c.full_name ILIKE $${paramIndex++} OR
@@ -677,12 +643,10 @@ export const getInvoices = async (req, res) => {
       });
       totalCount = parseInt(countResult?.count || 0, 10);
     } else {
-      // For non-search queries, use simple count without includes
+
       totalCount = await Invoice.schema(schema).count({ where: whereClause });
     }
 
-    // Build find query - optimize by selecting only necessary attributes
-    // Note: paid_amount and remaining_amount are calculated from payments, not stored fields
     const findOptions = {
       where: whereClause,
       attributes: [
@@ -698,7 +662,7 @@ export const getInvoices = async (req, res) => {
         "branch_id",
         "customer_id",
         "created_by",
-      ], // Only fetch necessary fields for list view
+      ],
       include: [
         {
           model: Customer.schema(schema),
@@ -751,7 +715,6 @@ export const getInvoiceById = async (req, res) => {
     const schema = req.tenant.db_schema;
     const { id } = req.params;
 
-    // ✅ Validation to prevent 500 error on non-numeric IDs
     if (!id || isNaN(id)) {
       return res.status(400).json({ message: "Invalid invoice ID" });
     }
@@ -771,7 +734,6 @@ export const getInvoiceById = async (req, res) => {
 
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
-    // ✅ Access Control for Single Invoice
     if (
       req.user.role !== "store_owner" &&
       invoice.branch_id !== req.user.branch_id
@@ -826,7 +788,6 @@ export const getInvoicePDF = async (req, res) => {
       return res.status(403).json({ message: "Access denied to this invoice" });
     }
 
-    // Fetch all inventory items in a single query to avoid N+1 problem
     const inventoryItemIds = invoice.items
       .map((item) => item.inventory_item_id)
       .filter((id) => id != null);
@@ -839,10 +800,8 @@ export const getInvoicePDF = async (req, res) => {
           })
         : [];
 
-    // Create a map for O(1) lookup
     const inventoryMap = new Map(inventoryItems.map((item) => [item.id, item]));
 
-    // Map invoice items: use stored quantity/barcode from invoice row; fallback to inventory for barcode (e.g. old rows)
     const itemsWithDetails = invoice.items.map((item) => {
       const inventoryItem = inventoryMap.get(item.inventory_item_id);
       const json = item.toJSON();
@@ -866,7 +825,6 @@ export const getInvoicePDF = async (req, res) => {
       user = { full_name: "Cashier", id: invoice.created_by };
     }
 
-    // Fetch branch with logo_url
     const branch = await sequelize.models.Branch.schema(schema).findByPk(
       invoice.branch_id,
     );
@@ -940,10 +898,9 @@ export const sendInvoiceWhatsApp = async (req, res) => {
       return res.status(400).json({ message: "Phone number is required" });
     }
 
-    // Check if PDF exists, if not generate it
     let pdfPath = invoice.pdf_path;
     if (!pdfPath || !fs.existsSync(pdfPath)) {
-      // Generate PDF on demand
+
       const invoiceWithItems = await Invoice.schema(schema).findByPk(id, {
         include: [
           { model: InvoiceItem.schema(schema), as: "items" },
@@ -957,7 +914,6 @@ export const sendInvoiceWhatsApp = async (req, res) => {
         ],
       });
 
-      // Fetch all inventory items in a single query to avoid N+1 problem
       const inventoryItemIds = (invoiceWithItems.items || [])
         .map((item) => item.inventory_item_id)
         .filter((id) => id != null);
@@ -970,12 +926,10 @@ export const sendInvoiceWhatsApp = async (req, res) => {
             })
           : [];
 
-      // Create a map for O(1) lookup
       const inventoryMap = new Map(
         inventoryItems.map((item) => [item.id, item]),
       );
 
-      // Map invoice items: use stored quantity/barcode from invoice row; fallback to inventory for barcode
       const itemsWithDetails = (invoiceWithItems.items || []).map((item) => {
         const inventoryItem = inventoryMap.get(item.inventory_item_id);
         const json = item.toJSON();
@@ -999,7 +953,6 @@ export const sendInvoiceWhatsApp = async (req, res) => {
         user = { full_name: "Cashier", id: invoiceWithItems.created_by };
       }
 
-      // Fetch branch with logo_url
       const branch = await Branch.schema(schema).findByPk(
         invoiceWithItems.branch_id,
       );
@@ -1028,7 +981,7 @@ export const sendInvoiceWhatsApp = async (req, res) => {
         await invoice.save();
         pdfPath = pdfResult.localPath;
       } else {
-        // If PDF generation failed, try to send from buffer
+
         if (pdfResult?.buffer) {
           const success = await sendWhatsAppDocument(
             req.tenant.slug,
@@ -1056,7 +1009,6 @@ export const sendInvoiceWhatsApp = async (req, res) => {
       }
     }
 
-    // Verify PDF path exists before sending
     if (!pdfPath || !fs.existsSync(pdfPath)) {
       logger.error("PDF path invalid or file not found", {
         component: "sales",
@@ -1113,7 +1065,6 @@ export const downloadSalesExcel = async (req, res) => {
     const { branch_ids, start_date, end_date } = req.query;
     const whereClause = {};
 
-    // Branch filtering
     if (req.user.role === "store_owner") {
       if (branch_ids && branch_ids !== "null" && branch_ids !== "undefined") {
         const branchIdArray = branch_ids
@@ -1128,7 +1079,6 @@ export const downloadSalesExcel = async (req, res) => {
       whereClause.branch_id = req.user.branch_id;
     }
 
-    // Date range filtering
     if (start_date || end_date) {
       const dateRange = {};
       if (start_date) {
@@ -1160,12 +1110,11 @@ export const downloadSalesExcel = async (req, res) => {
         { model: InvoicePayment.schema(schema), as: "payments" },
       ],
       order: [["createdAt", "DESC"]],
-      limit: 10000, // Increased limit for date-filtered exports
+      limit: 10000,
     });
 
     const excelBuffer = await generateSalesExcelBuffer(invoices);
 
-    // Generate filename with date range if provided
     let filename = "sales-report";
     if (start_date && end_date) {
       filename = `sales-report-${start_date}_to_${end_date}`;

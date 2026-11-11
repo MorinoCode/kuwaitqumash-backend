@@ -1,4 +1,3 @@
-//domains/auth/role.models.js
 import { DataTypes } from 'sequelize';
 import sequelize from '../../config/database.js';
 
@@ -14,7 +13,7 @@ const Role = sequelize.define('Role', {
     unique: true
   },
   permissions: {
-    type: DataTypes.JSONB, 
+    type: DataTypes.JSONB,
     defaultValue: []
   },
   description: {

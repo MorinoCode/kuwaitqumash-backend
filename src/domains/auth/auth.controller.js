@@ -13,7 +13,7 @@ const generateToken = (id) => {
 
 export const login = async (req, res) => {
   try {
-    let { username, password } = req.body; // validated & sanitized by Zod
+    let { username, password } = req.body;
     username = username.toLowerCase();
     const schema = req.tenant.db_schema;
 
@@ -29,8 +29,7 @@ export const login = async (req, res) => {
     });
 
     if (!user) {
-      // Prevent timing attacks by running bcrypt even if user not found
-      // $2b$10$abcdefghijklmnopqrstuv is a valid salt format
+
       await bcrypt.compare(password, "$2b$10$abcdefghijklmnopqrstuvwxyzaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
       return res.status(401).json({ message: "Invalid credentials." });
     }
@@ -86,7 +85,6 @@ export const login = async (req, res) => {
 export const logout = (req, res) => {
   const isProduction = process.env.NODE_ENV === "production";
 
-  // Options must match the login cookie EXACTLY to clear it successfully
   res.clearCookie("token", {
     httpOnly: true,
     secure: isProduction,

@@ -22,17 +22,15 @@ import {
   getRedisClient,
 } from "../config/redis.js";
 
-// Redis keys
 const REDIS_SESSION_PREFIX = "whatsapp:session:";
 const REDIS_SESSIONS_SET = "whatsapp:sessions:active";
 
-// Helper functions for Redis session management
 const getRedisSessionKey = (sessionKey) =>
   `${REDIS_SESSION_PREFIX}${sessionKey}`;
 
 const saveSessionToRedis = async (sessionKey, sessionData) => {
   try {
-    await cacheSet(getRedisSessionKey(sessionKey), sessionData, 3600); // 1 hour TTL
+    await cacheSet(getRedisSessionKey(sessionKey), sessionData, 3600);
     const client = getRedisClient();
     if (client) {
       await client.sadd(REDIS_SESSIONS_SET, sessionKey);
@@ -62,21 +60,17 @@ const deleteSessionFromRedis = async (sessionKey) => {
   }
 };
 
-// نگهداری کانکشن‌های فعال در حافظه رم (fallback)
 const sessions = new Map();
 
-// Generate session key: tenant_slug + branch_id (or just tenant_slug if branch_id is null)
 const getSessionKey = (tenantSlug, branchId = null) => {
   return branchId ? `${tenantSlug}_branch_${branchId}` : tenantSlug;
 };
 
-// Cleanup disconnected sessions from Redis and memory
 export const cleanupDisconnectedSessions = async () => {
   try {
     const disconnectedSessions = [];
     const allSessionKeys = new Set();
 
-    // Get sessions from Redis
     try {
       const client = getRedisClient();
       if (client) {
@@ -90,19 +84,16 @@ export const cleanupDisconnectedSessions = async () => {
       });
     }
 
-    // Add memory sessions
     sessions.forEach((_, key) => allSessionKeys.add(key));
 
-    // Check all sessions
     for (const sessionKey of allSessionKeys) {
       let isDisconnected = false;
 
-      // Check memory session first
       const sock = sessions.get(sessionKey);
       if (!sock || !sock.user) {
         isDisconnected = true;
       } else {
-        // Check session status in database
+
         const [tenantSlug, branchIdStr] = sessionKey.includes("_branch_")
           ? sessionKey.split("_branch_")
           : [sessionKey, null];
@@ -126,7 +117,6 @@ export const cleanupDisconnectedSessions = async () => {
       }
     }
 
-    // Remove disconnected sessions from memory and Redis
     for (const sessionKey of disconnectedSessions) {
       const sock = sessions.get(sessionKey);
       if (sock) {
@@ -163,7 +153,6 @@ export const cleanupDisconnectedSessions = async () => {
   }
 };
 
-// Run cleanup every 5 minutes (skip in test so CI process can exit)
 if (typeof setInterval !== "undefined" && process.env.NODE_ENV !== "test") {
   setInterval(() => {
     cleanupDisconnectedSessions().catch((err) => {
@@ -172,7 +161,7 @@ if (typeof setInterval !== "undefined" && process.env.NODE_ENV !== "test") {
         error: err?.message,
       });
     });
-  }, 5 * 60 * 1000); // 5 minutes
+  }, 5 * 60 * 1000);
 }
 
 export const getSessionStatus = async (tenantSlug, branchId = null) => {
@@ -223,11 +212,10 @@ const ensureWhatsappConfig = async (tenantSlug, branchId = null) => {
       where.branch_id = { [Op.is]: null };
     }
 
-    // Try to find existing config first
     let config = await WhatsappConfig.findOne({ where });
 
     if (!config) {
-      // Create new config if it doesn't exist
+
       config = await WhatsappConfig.create({
         tenant_slug: tenantSlug,
         branch_id: branchId || null,
@@ -305,7 +293,7 @@ export const connectToWhatsApp = async (
 
   try {
     log("connectToWhatsApp start", { isRestart, restartRetry });
-    
+
     const existingSock = sessions.get(sessionKey);
     if (existingSock) {
       try {
@@ -323,7 +311,6 @@ export const connectToWhatsApp = async (
     );
     await ensureWhatsappConfig(tenantSlug, branchId);
 
-    // Use GCS adapter in production, local filesystem in development
     const useGCS =
       process.env.USE_GCS_FOR_WHATSAPP === "true" ||
       process.env.NODE_ENV === "production";
@@ -331,13 +318,13 @@ export const connectToWhatsApp = async (
     let state, saveCreds;
 
     if (useGCS) {
-      // Production: use GCS adapter
+
       log("Using GCS for WhatsApp sessions", { sessionKey });
       const authState = await createGCSAuthState(sessionKey);
       state = authState.state;
       saveCreds = authState.saveCreds;
     } else {
-      // Local development: use filesystem
+
       if (!fs.existsSync(sessionDir)) {
         fs.mkdirSync(sessionDir, { recursive: true });
         log("session dir created", { sessionDir });
@@ -376,14 +363,14 @@ export const connectToWhatsApp = async (
     log("makeWASocket created");
 
     sessions.set(sessionKey, sock);
-    // Save session info to Redis
+
     await saveSessionToRedis(sessionKey, {
       tenantSlug,
       branchId,
       connected: true,
       timestamp: Date.now(),
     });
-    // Save session info to Redis
+
     await saveSessionToRedis(sessionKey, {
       tenantSlug,
       branchId,
@@ -620,7 +607,6 @@ export const sendInvoicePDF = async (
     const sessionKey = getSessionKey(tenantSlug, branchId);
     let sock = sessions.get(sessionKey);
 
-    // Check config first
     const where = { tenant_slug: tenantSlug };
     if (branchId !== null && branchId !== undefined) {
       where.branch_id = branchId;
@@ -638,7 +624,6 @@ export const sendInvoicePDF = async (
       return false;
     }
 
-    // اگر کانکشن قطع بود، تلاش برای اتصال مجدد
     if (!sock) {
       logger.info("Socket not found, attempting reconnect", {
         component: "whatsapp",
@@ -647,13 +632,12 @@ export const sendInvoicePDF = async (
         sessionKey,
       });
       sock = await connectToWhatsApp(tenantSlug, null, { branchId });
-      // کمی صبر برای برقراری اتصال
+
       await new Promise((r) => setTimeout(r, 3000));
-      // Check again after reconnect
+
       sock = sessions.get(sessionKey);
     }
 
-    // Verify socket is ready
     if (!sock || !sock.user) {
       logger.warn("Socket not ready after reconnect attempt", {
         component: "whatsapp",
@@ -666,7 +650,6 @@ export const sendInvoicePDF = async (
       return false;
     }
 
-    // فرمت کردن شماره تلفن برای واتساپ
     const formattedPhone = formatPhoneForWhatsApp(targetPhone);
     if (!formattedPhone) {
       logger.warn("Invalid phone format for PDF send", {
@@ -767,7 +750,6 @@ const formatPhoneJid = (phone) => {
   return formatPhoneForWhatsApp(phone);
 };
 
-/** Send plain text message via WhatsApp. */
 export const sendWhatsAppText = async (
   tenantSlug,
   targetPhone,
@@ -778,7 +760,6 @@ export const sendWhatsAppText = async (
     const sessionKey = getSessionKey(tenantSlug, branchId);
     let sock = sessions.get(sessionKey);
 
-    // Check config first
     const where = { tenant_slug: tenantSlug };
     if (branchId !== null && branchId !== undefined) {
       where.branch_id = branchId;
@@ -796,7 +777,6 @@ export const sendWhatsAppText = async (
       return false;
     }
 
-    // اگر کانکشن در حافظه نبود، تلاش برای اتصال مجدد از S3
     if (!sock) {
       logger.info("Socket not found for text send, attempting reconnect", {
         component: "whatsapp",
@@ -805,13 +785,12 @@ export const sendWhatsAppText = async (
         sessionKey,
       });
       sock = await connectToWhatsApp(tenantSlug, null, { branchId });
-      // کمی صبر برای برقراری اتصال
+
       await new Promise((r) => setTimeout(r, 3000));
-      // Check again after reconnect
+
       sock = sessions.get(sessionKey);
     }
 
-    // Verify socket is ready
     if (!sock || !sock.user) {
       logger.warn("WhatsApp not connected for send after reconnect attempt", {
         component: "whatsapp",
@@ -874,7 +853,6 @@ export const sendWhatsAppText = async (
   }
 };
 
-/** Send document (e.g. PDF buffer) via WhatsApp. */
 export const sendWhatsAppDocument = async (
   tenantSlug,
   targetPhone,
@@ -887,7 +865,6 @@ export const sendWhatsAppDocument = async (
     const sessionKey = getSessionKey(tenantSlug, branchId);
     let sock = sessions.get(sessionKey);
 
-    // Check config first
     const where = { tenant_slug: tenantSlug };
     if (branchId !== null && branchId !== undefined) {
       where.branch_id = branchId;
@@ -905,7 +882,6 @@ export const sendWhatsAppDocument = async (
       return false;
     }
 
-    // اگر کانکشن قطع بود، تلاش برای اتصال مجدد
     if (!sock) {
       logger.info("Socket not found for document send, attempting reconnect", {
         component: "whatsapp",
@@ -914,13 +890,12 @@ export const sendWhatsAppDocument = async (
         sessionKey,
       });
       sock = await connectToWhatsApp(tenantSlug, null, { branchId });
-      // کمی صبر برای برقراری اتصال
+
       await new Promise((r) => setTimeout(r, 3000));
-      // Check again after reconnect
+
       sock = sessions.get(sessionKey);
     }
 
-    // Verify socket is ready
     if (!sock || !sock.user) {
       logger.warn("WhatsApp not connected for send after reconnect attempt", {
         component: "whatsapp",
@@ -943,7 +918,6 @@ export const sendWhatsAppDocument = async (
       return false;
     }
 
-    // Ensure buffer is a proper Buffer
     if (!buffer || !Buffer.isBuffer(buffer)) {
       logger.error("Invalid buffer provided for WhatsApp document", {
         component: "whatsapp",

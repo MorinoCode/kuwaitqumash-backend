@@ -1,7 +1,3 @@
-/**
- * Input sanitization middleware
- * Automatically sanitizes request body, query, and params
- */
 import {
   sanitizeString,
   sanitizeText,
@@ -9,22 +5,17 @@ import {
   sanitizePhone,
 } from "../utils/sanitize.js";
 
-/**
- * Sanitize request body, query, and params
- */
 export const sanitizeInput = (req, res, next) => {
   try {
-    // Sanitize body
+
     if (req.body && typeof req.body === "object") {
       req.body = sanitizeObject(req.body);
     }
 
-    // Sanitize query
     if (req.query && typeof req.query === "object") {
       req.query = sanitizeObject(req.query);
     }
 
-    // Sanitize params (only string values)
     if (req.params && typeof req.params === "object") {
       for (const [key, value] of Object.entries(req.params)) {
         if (typeof value === "string") {
@@ -36,21 +27,17 @@ export const sanitizeInput = (req, res, next) => {
     next();
   } catch (error) {
     void error;
-    // If sanitization fails, continue anyway (don't break the request)
+
     next();
   }
 };
 
-/**
- * Sanitize object recursively
- */
 const sanitizeObject = (obj) => {
-  // Handle null, undefined, or non-objects
+
   if (!obj || typeof obj !== "object") {
     return obj;
   }
 
-  // Handle arrays - return as-is (will be sanitized element-wise if needed)
   if (Array.isArray(obj)) {
     return obj;
   }
@@ -62,18 +49,15 @@ const sanitizeObject = (obj) => {
       continue;
     }
 
-    // Skip files (multer)
     if (value && typeof value === "object" && value.fieldname) {
       continue;
     }
 
-    // Recursively sanitize nested objects
     if (typeof value === "object" && !Array.isArray(value)) {
       sanitized[key] = sanitizeObject(value);
       continue;
     }
 
-    // Sanitize arrays
     if (Array.isArray(value)) {
       sanitized[key] = value.map((item) => {
         if (typeof item === "string") {
@@ -86,7 +70,6 @@ const sanitizeObject = (obj) => {
       continue;
     }
 
-    // Sanitize strings based on field name patterns
     if (typeof value === "string") {
       const lowerKey = key.toLowerCase();
 
@@ -101,13 +84,13 @@ const sanitizeObject = (obj) => {
       ) {
         sanitized[key] = sanitizeText(value);
       } else if (lowerKey.includes("email")) {
-        // Email sanitization (basic)
+
         sanitized[key] = sanitizeString(value, 255).toLowerCase();
       } else if (lowerKey.includes("search")) {
-        // Search fields - less aggressive sanitization
+
         sanitized[key] = sanitizeString(value, 255);
       } else {
-        // Default string sanitization
+
         sanitized[key] = sanitizeString(value, 1000);
       }
     }

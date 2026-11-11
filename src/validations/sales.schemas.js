@@ -80,7 +80,7 @@ const payment = z
 export const createSaleBody = z
   .object({
     customer_id: z.coerce.number().int().positive("Customer ID is required."),
-    branch_id: z.coerce.number().int().positive().optional(), // Active branch ID from frontend
+    branch_id: z.coerce.number().int().positive().optional(),
     items: z.array(saleItem).min(1, "At least one item is required."),
     payments: z.array(payment).min(1, "At least one payment is required."),
     notes: z.string().max(2000).optional().nullable(),

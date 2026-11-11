@@ -1,11 +1,3 @@
-/**
- * Fabric stock mathematics.
- *
- * Stock of one inventory row is: `quantity` rolls (units) x `length_m` meters each.
- * Sales cut meters from those rolls; refunds put the meters back.
- * Both helpers are pure so they can be unit-tested without a database.
- */
-
 const round3 = (value) => Math.round((Number(value) || 0) * 1000) / 1000;
 
 const toMeters = (value) => {
@@ -18,10 +10,6 @@ const toUnits = (value) => {
   return Number.isFinite(units) && units > 0 ? units : 1;
 };
 
-/**
- * Deduct a sale line from stock, cutting `metersPerUnit` from `units` rolls.
- * Returns `{ ok: false }` when the requested meters exceed what is in stock.
- */
 export const applySaleToStock = (
   { length_m = 0, quantity = 0 } = {},
   metersPerUnit,
@@ -69,9 +57,6 @@ export const applySaleToStock = (
   };
 };
 
-/**
- * Put refunded meters back into stock, keeping roll count consistent.
- */
 export const applyRefundToStock = (
   { length_m = 0, quantity = 0 } = {},
   metersPerUnit,
@@ -86,7 +71,6 @@ export const applyRefundToStock = (
     return { quantity: 0, length_m: 0, restoredMeters: 0, totalMeters: 0 };
   }
 
-  // A partial refund tops the existing roll back up; whole rolls add to the count.
   const wholeRolls = perRoll > 0 ? Math.floor(restoredMeters / perRoll) : 0;
   const newQuantity =
     rolls > 0

@@ -19,8 +19,7 @@ process.on("unhandledRejection", (reason) => {
     error: err?.message,
     stack: err?.stack,
   });
-  // In production, exit process to prevent unstable state
-  // In development, log but continue for debugging
+
   if (process.env.NODE_ENV === "production") {
     logger.error("Exiting due to unhandled rejection in production");
     process.exit(1);
@@ -32,7 +31,7 @@ process.on("uncaughtException", (err) => {
     error: err?.message,
     stack: err?.stack,
   });
-  // Always exit on uncaught exception - this is a critical error
+
   logger.error("Exiting due to uncaught exception");
   process.exit(1);
 });
@@ -75,12 +74,10 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const httpServer = http.createServer(app);
 
-// CRITICAL FOR CLOUD RUN: Trust the load balancer/proxy
-// Without this, secure cookies, X-Forwarded-* headers, and IP detection won't work correctly
 app.set("trust proxy", 1);
 
 initSocket(httpServer);
-// Handle CORS Origins - add frontend URL explicitly
+
 const defaultOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
@@ -89,7 +86,7 @@ const defaultOrigins = [
 const corsOrigins = process.env.CORS_ORIGINS
   ? [
       ...process.env.CORS_ORIGINS.split(",")
-        .map((o) => o.trim().replace(/\/$/, "")) // Remove trailing slashes
+        .map((o) => o.trim().replace(/\/$/, ""))
         .filter(Boolean),
       ...defaultOrigins,
     ]
@@ -112,7 +109,7 @@ app.use(
 
 app.use(express.json());
 app.use(cookieParser());
-// Input sanitization middleware (before routes)
+
 app.use(sanitizeInput);
 app.use(
   compression({
@@ -124,10 +121,9 @@ app.use(
 );
 app.use(requestId);
 
-// General API rate limiter (increased for production with 100+ users)
 const apiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
-  max: 500, // Increased from 200 to 500 for production
+  windowMs: 1 * 60 * 1000,
+  max: 500,
   message: {
     success: false,
     message: "Too many requests. Please try again later.",
@@ -135,7 +131,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    // Skip rate limiting for health checks
+
     const path = req.path || req.originalUrl || "";
     return path === "/health" || path === "/api/health" || path === "/ping";
   },
@@ -144,7 +140,6 @@ app.use("/api", apiLimiter);
 
 app.use("/uploads", express.static(path.join(__dirname, "../public/uploads")));
 
-// Simple ping endpoint (no DB dependency - for Cloud Run health checks)
 app.get("/ping", (req, res) => {
   res.status(200).json({
     status: "ok",
@@ -152,7 +147,6 @@ app.get("/ping", (req, res) => {
   });
 });
 
-// Health check endpoint (for Cloud Run and monitoring)
 app.get("/health", async (req, res) => {
   const checks = {
     database: false,
@@ -169,7 +163,6 @@ app.get("/health", async (req, res) => {
     });
   }
 
-  // Check WhatsApp connections (at least one should be configured)
   try {
     const whatsappConfigs = await WhatsappConfig.findAll({ limit: 1 });
     checks.whatsapp = whatsappConfigs.length > 0;
@@ -180,7 +173,7 @@ app.get("/health", async (req, res) => {
     });
   }
 
-  const allHealthy = checks.database; // Database is critical, others are optional
+  const allHealthy = checks.database;
   const status = allHealthy ? "ok" : "degraded";
 
   res.status(allHealthy ? 200 : 503).json({
@@ -190,7 +183,6 @@ app.get("/health", async (req, res) => {
   });
 });
 
-// API health check (simpler version for load balancers)
 app.get("/api/health", async (req, res) => {
   try {
     await sequelize.authenticate();
@@ -254,7 +246,7 @@ InvoiceItem.belongsTo(InventoryItem, {
 });
 InventoryItem.hasMany(InvoiceItem, {
   foreignKey: "inventory_item_id",
-  as: "InvoiceItems", // Sequelize default plural alias
+  as: "InvoiceItems",
 });
 
 app.use("/api/platform", platformRoutes);
@@ -268,15 +260,14 @@ app.use("/api/refunds", resolveTenant, protect, refundRoutes);
 app.use("/api/manage", resolveTenant, protect, managementRoutes);
 app.use("/api/dashboard", resolveTenant, protect, dashboardRoutes);
 
-// Global error handler - must be last middleware
 app.use((err, req, res, next) => {
-  // Don't log if response already sent
+
   if (res.headersSent) {
     return next(err);
   }
 
   const isValidation = err.name === 'SequelizeValidationError' || err.name === 'SequelizeUniqueConstraintError';
-  
+
   if (!isValidation) {
     logger.error("Unhandled error", {
       requestId: req.requestId,
@@ -297,10 +288,8 @@ app.use((err, req, res, next) => {
     res.setHeader("x-request-id", req.requestId);
   }
 
-  // Determine status code
   const statusCode = err.statusCode || err.status || 500;
 
-  // Send error response
   res.status(statusCode).json({
     success: false,
     message: err.message || "Internal server error. Please try again later.",
@@ -350,7 +339,7 @@ const gracefulShutdown = async (signal) => {
 };
 
 const startServer = async () => {
-  // Try to connect to database, but don't crash if it fails
+
   try {
     await sequelize.authenticate();
     logger.info("PostgreSQL connection established", { component: "startup" });
@@ -368,14 +357,12 @@ const startServer = async () => {
       tenantCount: tenants.length,
     });
 
-    // Optimized: Only check if tables exist, don't sync unless necessary
-    // Full sync will happen lazily when tenant is first used
     const requiredTables = [
       "branches",
       "users",
       "customers",
       "inventory_items",
-      "custom_inventory_options", // Required for custom options endpoint
+      "custom_inventory_options",
       "invoices",
       "invoice_items",
       "invoice_payments",
@@ -387,16 +374,14 @@ const startServer = async () => {
     for (const tenant of tenants) {
       const schema = tenant.db_schema;
 
-      // Create schema if it doesn't exist
       await sequelize.query(`CREATE SCHEMA IF NOT EXISTS "${schema}";`);
 
       try {
-        // Quick check: Verify that main tables exist
-        // This is much faster than sync({ alter: true })
+
         const [tableCheck] = await sequelize.query(
           `SELECT COUNT(*)::int as table_count
-           FROM information_schema.tables 
-           WHERE table_schema = $1 
+           FROM information_schema.tables
+           WHERE table_schema = $1
            AND table_name = ANY($2::text[])`,
           {
             bind: [schema, requiredTables],
@@ -407,7 +392,7 @@ const startServer = async () => {
         const existingTableCount = tableCheck?.[0]?.table_count || 0;
 
         if (existingTableCount === 0) {
-          // New tenant - needs full sync
+
           logger.info("New tenant detected, performing initial sync", {
             component: "startup",
             schema,
@@ -415,7 +400,6 @@ const startServer = async () => {
 
           await sequelize.query(`SET search_path TO "${schema}", public`);
 
-          // Sync only essential tables for new tenant
           await Branch.schema(schema).sync({ alter: false });
           await User.schema(schema).sync({ alter: false });
           await Customer.schema(schema).sync({ alter: false });
@@ -442,7 +426,7 @@ const startServer = async () => {
 
           await sequelize.query("SET search_path TO public");
         } else if (existingTableCount < requiredTables.length) {
-          // Partial tables - sync missing ones only!
+
           logger.info(
             "Partial tenant schema detected, syncing missing tables",
             {
@@ -455,13 +439,11 @@ const startServer = async () => {
 
           await sequelize.query(`SET search_path TO "${schema}", public`);
 
-          // Sync all tables to ensure completeness
           await Branch.schema(schema).sync({ alter: false });
           await User.schema(schema).sync({ alter: false });
           await Customer.schema(schema).sync({ alter: false });
           await InventoryItem.schema(schema).sync({ alter: false });
 
-          // Sync CustomInventoryOption - required for custom options endpoint
           try {
             await CustomInventoryOption.schema(schema).sync({ alter: false });
           } catch (customOptionError) {
@@ -480,17 +462,14 @@ const startServer = async () => {
           await RefundPayment.schema(schema).sync({ alter: false });
 
           await sequelize.query("SET search_path TO public");
-        } else {
-          // All tables exist - skip sync (fast path)
-          // Tables are already created, no need to sync
-        }
+        } else { void 0; }
       } catch (checkError) {
         logger.warn("Tenant schema check failed, will sync on first use", {
           component: "startup",
           schema,
           error: checkError.message,
         });
-        // Continue - sync will happen lazily when tenant is used
+
       }
     }
 
@@ -501,14 +480,13 @@ const startServer = async () => {
 
     startWhatsAppCleanupScheduler();
   } catch (dbError) {
-    // Database connection failed - log but don't crash
+
     logger.error("Database connection failed during startup", {
       component: "startup",
       error: dbError.message,
       stack: dbError.stack,
     });
 
-    // Only exit if REQUIRE_DB is explicitly set to "true"
     if (process.env.REQUIRE_DB === "true") {
       logger.error("REQUIRE_DB=true set, exiting due to DB failure");
       process.exit(1);
@@ -522,9 +500,8 @@ const startServer = async () => {
     }
   }
 
-  // Start server regardless of DB connection status
   try {
-    // Cloud Run uses PORT env var, default to 5000 for local
+
     const PORT = process.env.PORT || 5000;
     httpServer.listen(PORT, "0.0.0.0", () => {
       logger.info("Server listening", { component: "startup", port: PORT });
@@ -540,10 +517,9 @@ const startServer = async () => {
             const schema = t.db_schema;
 
             try {
-              // Set search path for this tenant
+
               await sequelize.query(`SET search_path TO "${schema}", public`);
 
-              // Reconnect tenant-level session
               const tenantConfig = await WhatsappConfig.findOne({
                 where: {
                   tenant_slug: slug,
@@ -567,7 +543,6 @@ const startServer = async () => {
                 });
               }
 
-              // Reconnect branch-specific sessions
               const branches = await Branch.schema(schema).findAll({
                 attributes: ["id"],
               });

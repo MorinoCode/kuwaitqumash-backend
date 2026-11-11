@@ -1,8 +1,3 @@
-/**
- * Redis Configuration and Client
- * Provides Redis client with fallback support.
- * Redis is disabled by default. Set REDIS_ENABLED=true (and optionally REDIS_URL) to enable.
- */
 import Redis from "ioredis";
 import logger from "../utils/logger.js";
 import { memoryCacheGet, memoryCacheSet, memoryCacheDelete, memoryCacheDeletePattern } from "../utils/memory-cache.js";
@@ -13,7 +8,6 @@ let redisAvailable = false;
 const isRedisEnabled = () =>
   process.env.REDIS_ENABLED === "true" || process.env.REDIS_ENABLED === "1";
 
-// Initialize Redis client (only when REDIS_ENABLED=true)
 const initRedis = () => {
   if (!isRedisEnabled()) return;
   try {
@@ -41,11 +35,10 @@ const initRedis = () => {
     });
 
     redisClient.on("error", (err) => {
-      // Don't log as error if it's a connection error (expected when Redis is not running)
+
       const errorMessage = err?.message || err?.code || "Unknown error";
       const errorCode = err?.code || "";
 
-      // Connection errors (Redis not running) - log as warning
       if (
         errorMessage.includes("ECONNREFUSED") ||
         errorMessage.includes("connect") ||
@@ -60,7 +53,7 @@ const initRedis = () => {
           note: "This is normal if Redis is not installed or running. System will use database fallback.",
         });
       } else {
-        // Other errors - log as error but still use fallback
+
         logger.error("Redis error", {
           component: "redis",
           error: errorMessage,
@@ -79,12 +72,10 @@ const initRedis = () => {
       redisAvailable = false;
     });
 
-    // Try to connect
     redisClient.connect().catch((err) => {
       const errorMessage = err?.message || err?.code || "Connection failed";
       const errorCode = err?.code || "";
 
-      // Only log once on initial connection failure
       if (
         errorMessage.includes("ECONNREFUSED") ||
         errorMessage.includes("ENOTFOUND") ||
@@ -115,7 +106,6 @@ const initRedis = () => {
   }
 };
 
-// Get Redis client (returns null if not available or Redis disabled)
 export const getRedisClient = () => {
   if (!isRedisEnabled()) return null;
   if (!redisClient) {
@@ -124,10 +114,8 @@ export const getRedisClient = () => {
   return redisAvailable ? redisClient : null;
 };
 
-// Check if Redis is available (false when Redis is disabled or not connected)
 export const isRedisAvailable = () => isRedisEnabled() && redisAvailable;
 
-// Cache helper functions - fallback to in-memory cache when Redis unavailable
 export const cacheGet = async (key) => {
   const client = getRedisClient();
   if (client) {
@@ -140,10 +128,10 @@ export const cacheGet = async (key) => {
         key,
         error: error?.message,
       });
-      // Fall through to memory cache on error
+
     }
   }
-  // Fallback to in-memory cache when Redis not available or on error
+
   return memoryCacheGet(key);
 };
 
@@ -161,7 +149,7 @@ export const cacheSet = async (key, value, ttlSeconds = 300) => {
       });
     }
   }
-  // Fallback to in-memory cache when Redis not available
+
   memoryCacheSet(key, value, ttlSeconds);
   return true;
 };
@@ -180,8 +168,7 @@ export const cacheDelete = async (key) => {
       });
     }
   }
-  
-  // Fallback to in-memory cache when Redis not available or on error
+
   memoryCacheDelete(key);
   return true;
 };
@@ -190,7 +177,7 @@ export const cacheDeletePattern = async (pattern) => {
   const client = getRedisClient();
   if (client) {
     try {
-      // Use scanStream instead of keys to avoid blocking Redis on large datasets
+
       const stream = client.scanStream({
         match: pattern,
         count: 100,
@@ -205,7 +192,7 @@ export const cacheDeletePattern = async (pattern) => {
         });
         stream.on("end", async () => {
           if (keysToDelete.length > 0) {
-            // Delete in batches to avoid large payloads
+
             for (let i = 0; i < keysToDelete.length; i += 500) {
               const batch = keysToDelete.slice(i, i + 500);
               await client.del(...batch);
@@ -230,13 +217,11 @@ export const cacheDeletePattern = async (pattern) => {
       });
     }
   }
-  
-  // Fallback to in-memory cache when Redis not available
+
   memoryCacheDeletePattern(pattern);
   return true;
 };
 
-// Initialize on import only when Redis is enabled (no connection attempt otherwise)
 if (isRedisEnabled()) {
   initRedis();
 }

@@ -30,9 +30,6 @@ const initStorage = () => {
   }
 };
 
-/**
- * Check if we should use GCS (production) or local filesystem (local dev)
- */
 const shouldUseGCS = () => {
   return (
     process.env.USE_GCS_FOR_WHATSAPP === "true" ||
@@ -40,20 +37,13 @@ const shouldUseGCS = () => {
   );
 };
 
-/**
- * Get file path in GCS bucket
- * Format: whatsapp_sessions/{sessionKey}/{filename}
- */
 const getGCSFilePath = (sessionKey, filename) => {
   return `whatsapp_sessions/${sessionKey}/${filename}`;
 };
 
-/**
- * Read file from GCS or local filesystem
- */
 export const readFile = async (sessionKey, filename) => {
   if (!shouldUseGCS()) {
-    // Local development: use filesystem
+
     const localPath = path.join(
       process.cwd(),
       "whatsapp_sessions",
@@ -64,7 +54,6 @@ export const readFile = async (sessionKey, filename) => {
     return fs.readFileSync(localPath, "utf-8");
   }
 
-  // Production: use GCS
   try {
     initStorage();
     const filePath = getGCSFilePath(sessionKey, filename);
@@ -86,12 +75,9 @@ export const readFile = async (sessionKey, filename) => {
   }
 };
 
-/**
- * Write file to GCS or local filesystem
- */
 export const writeFile = async (sessionKey, filename, data) => {
   if (!shouldUseGCS()) {
-    // Local development: use filesystem
+
     const localDir = path.join(process.cwd(), "whatsapp_sessions", sessionKey);
     if (!fs.existsSync(localDir)) {
       fs.mkdirSync(localDir, { recursive: true });
@@ -101,7 +87,6 @@ export const writeFile = async (sessionKey, filename, data) => {
     return;
   }
 
-  // Production: use GCS
   try {
     initStorage();
     const filePath = getGCSFilePath(sessionKey, filename);
@@ -130,12 +115,9 @@ export const writeFile = async (sessionKey, filename, data) => {
   }
 };
 
-/**
- * Delete file from GCS or local filesystem
- */
 export const deleteFile = async (sessionKey, filename) => {
   if (!shouldUseGCS()) {
-    // Local development: use filesystem
+
     const localPath = path.join(
       process.cwd(),
       "whatsapp_sessions",
@@ -148,7 +130,6 @@ export const deleteFile = async (sessionKey, filename) => {
     return;
   }
 
-  // Production: use GCS
   try {
     initStorage();
     const filePath = getGCSFilePath(sessionKey, filename);
@@ -173,18 +154,14 @@ export const deleteFile = async (sessionKey, filename) => {
   }
 };
 
-/**
- * List all files in a session directory
- */
 export const listFiles = async (sessionKey) => {
   if (!shouldUseGCS()) {
-    // Local development: use filesystem
+
     const localDir = path.join(process.cwd(), "whatsapp_sessions", sessionKey);
     if (!fs.existsSync(localDir)) return [];
     return fs.readdirSync(localDir);
   }
 
-  // Production: use GCS
   try {
     initStorage();
     const prefix = `whatsapp_sessions/${sessionKey}/`;
@@ -192,7 +169,7 @@ export const listFiles = async (sessionKey) => {
 
     return files
       .map((file) => {
-        // Extract filename from full path
+
         const fullPath = file.name;
         return fullPath.replace(prefix, "");
       })
@@ -207,12 +184,9 @@ export const listFiles = async (sessionKey) => {
   }
 };
 
-/**
- * Delete entire session directory
- */
 export const deleteSessionDir = async (sessionKey) => {
   if (!shouldUseGCS()) {
-    // Local development: use filesystem
+
     const localDir = path.join(process.cwd(), "whatsapp_sessions", sessionKey);
     if (fs.existsSync(localDir)) {
       fs.rmSync(localDir, { recursive: true, force: true });
@@ -220,13 +194,11 @@ export const deleteSessionDir = async (sessionKey) => {
     return;
   }
 
-  // Production: use GCS
   try {
     initStorage();
     const prefix = `whatsapp_sessions/${sessionKey}/`;
     const [files] = await bucket.getFiles({ prefix });
 
-    // Delete all files in this session
     await Promise.all(files.map((file) => file.delete()));
 
     logger.info("Session directory deleted from GCS", {
@@ -242,25 +214,15 @@ export const deleteSessionDir = async (sessionKey) => {
   }
 };
 
-/**
- * Custom auth state adapter for Baileys
- * این تابع یک adapter می‌سازد که با useMultiFileAuthState سازگار است
- *
- * Baileys از یک folder path استفاده می‌کند و خودش فایل‌ها را می‌خواند/می‌نویسد.
- * ما یک temporary local folder می‌سازیم، فایل‌ها را از GCS sync می‌کنیم،
- * و بعد از تغییرات دوباره به GCS sync می‌کنیم.
- */
 export const createGCSAuthState = async (sessionKey) => {
   const tempDir = path.join(process.cwd(), "whatsapp_sessions", sessionKey);
 
-  // Ensure temp directory exists
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
   }
 
   const fileStatsCache = new Map();
 
-  // Sync from GCS to local temp directory
   try {
     const files = await listFiles(sessionKey);
     const BATCH_SIZE = 20;
@@ -278,7 +240,7 @@ export const createGCSAuthState = async (sessionKey) => {
         })
       );
     }
-    
+
     logger.debug("Synced files from GCS to local", {
       component: "whatsapp-gcs",
       sessionKey,
@@ -304,11 +266,11 @@ export const createGCSAuthState = async (sessionKey) => {
       const currentFiles = new Set(currentFileList);
       const uploadPromises = [];
       const deletePromises = [];
-      
+
       for (const file of currentFileList) {
         const localPath = path.join(tempDir, file);
         const stat = fs.statSync(localPath);
-        
+
         if (stat.isFile()) {
           const lastMtime = fileStatsCache.get(file);
           if (lastMtime !== stat.mtimeMs) {

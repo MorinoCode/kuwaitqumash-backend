@@ -10,8 +10,6 @@ import { cacheGet, cacheSet } from "../config/redis.js";
 
 const fontCache = new Map();
 
-//invoice
-
 const safeNum = (v, def = 0) => {
   const num = Number.isFinite(v) ? v : parseFloat(v);
   return isNaN(num) ? def : num;
@@ -20,7 +18,6 @@ const safeNum = (v, def = 0) => {
 const safeStr = (v, def = "-") =>
   v != null && String(v).trim() !== "" ? String(v).trim() : def;
 
-// Stone meters to grams: 1 ct = 0.2 g
 const stoneWeightToGrams = (stone) => {
   const w = Number(stone?.meters) || 0;
   return stone?.unit === "ct" ? w * 0.2 : w;
@@ -716,7 +713,7 @@ export const generateInvoicePDF = async (
     } else {
       textX = headerX + 0.5;
     }
-    
+
     setArFont(true);
     doc.text(labelAr, textX, tableStartY + tableHeaderHeight / 2 + 1.0, { align });
     headerX += width;
@@ -733,7 +730,7 @@ export const generateInvoicePDF = async (
       doc.rect(tableStartX, y, tableWidth, tableHeaderHeight, "FD");
       doc.setFontSize(5.0);
       doc.setTextColor(0, 0, 0);
-      
+
       let headerX2 = tableStartX + 0.5;
       headerLabelsAr.forEach((labelAr, lIdx) => {
         const width = colWidths[lIdx];
@@ -1149,7 +1146,6 @@ export const generateInvoicePDF = async (
 
   y += termsHeight + 4.5;
 
-  // --- KYC Section ---
   const kycHeight = 3 * 6.5 + 15;
   checkPageBreak(kycHeight);
 
@@ -1181,8 +1177,7 @@ export const generateInvoicePDF = async (
   const headerBg = lightGold;
 
   currentY = y;
-  
-  // Row 1
+
   let w1 = kycW * 0.15;
   let rx = kycX + kycW;
   doc.setDrawColor(...darkGold);
@@ -1208,13 +1203,12 @@ export const generateInvoicePDF = async (
   drawCheckboxWithText(rx, currentY + rowH / 2, "هديه");
 
   rx -= w4;
-  let w5 = rx - kycX; 
+  let w5 = rx - kycX;
   drawCell(kycX, currentY, w5, rowH);
   drawCheckboxWithText(rx, currentY + rowH / 2, "أخرى");
 
   currentY += rowH;
 
-  // Row 2
   rx = kycX + kycW;
   let c1 = kycW * 0.15;
   drawCell(rx - c1, currentY, c1, rowH, headerBg);
@@ -1246,7 +1240,6 @@ export const generateInvoicePDF = async (
 
   currentY += rowH;
 
-  // Row 3
   rx = kycX + kycW;
   let j1 = kycW * 0.15;
   drawCell(rx - j1, currentY, j1, rowH, headerBg);
@@ -1273,9 +1266,8 @@ export const generateInvoicePDF = async (
   drawCheckboxWithText(rx, currentY + rowH / 2, "نعم");
 
   currentY += rowH;
-  currentY += 6.5; 
+  currentY += 6.5;
 
-  // Signatures
   setArFont(true);
   doc.setFontSize(6.5);
   doc.setTextColor(0, 0, 0);
@@ -1400,15 +1392,6 @@ export const generateInvoicePDF = async (
 
 export const generateInvoicePDFAsBuffer = generateInvoicePDF;
 
-/**
- * Generate Credit Note PDF for a refund
- * @param {Object} refund - Refund with items (RefundItem) and invoice_item details
- * @param {Object} invoice - Original invoice
- * @param {Object} customer - Customer
- * @param {Object} user - User (creator)
- * @param {string} branchName - Branch name
- * @param {string|null} branchLogoUrl - Branch logo URL
- */
 export const generateCreditNotePDF = async (
   refund,
   invoice,

@@ -140,13 +140,11 @@ export const getCustomers = async (req, res) => {
       ];
     }
 
-    // Parse pagination parameters
     const MAX_LIMIT = parseInt(process.env.MAX_PAGINATION_LIMIT) || 200;
     const pageNum = parseInt(page, 10) || 1;
     const limitNum = Math.min(parseInt(limit, 10) || 20, MAX_LIMIT);
     const offset = (pageNum - 1) * limitNum;
 
-    // Get total count for pagination
     const totalCount = await Customer.schema(schema).count({
       where: whereClause,
     });
@@ -254,7 +252,6 @@ export const getCustomerById = async (req, res) => {
   }
 };
 
-// Customer AI Analytics - Comprehensive analysis
 export const getCustomerAnalytics = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
@@ -272,7 +269,6 @@ export const getCustomerAnalytics = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    // Get all invoices with items
     const invoices = await Invoice.schema(schema).findAll({
       where: { customer_id: id, status: "Paid" },
       include: [
@@ -305,7 +301,6 @@ export const getCustomerAnalytics = async (req, res) => {
       });
     }
 
-    // Calculate analytics
     let totalSpent = 0;
     let totalItems = 0;
     let totalMeters = 0;
@@ -322,11 +317,9 @@ export const getCustomerAnalytics = async (req, res) => {
       purchaseAmounts.push(parseFloat(inv.total_amount || 0));
       purchaseDates.push(new Date(inv.createdAt));
 
-      // Day of week analysis
       const dayOfWeek = new Date(inv.createdAt).getDay();
       dayOfWeekCount[dayOfWeek] = (dayOfWeekCount[dayOfWeek] || 0) + 1;
 
-      // Month analysis
       const month = new Date(inv.createdAt).getMonth();
       monthCount[month] = (monthCount[month] || 0) + 1;
 
@@ -334,7 +327,6 @@ export const getCustomerAnalytics = async (req, res) => {
         totalItems += parseInt(item.quantity || 1);
         totalMeters += parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
 
-        // Fabric preference
         const fabricType =
       item.fabric_type || item.inventory_item?.fabric_type || "Other";
         if (fabricType) {
@@ -342,14 +334,12 @@ export const getCustomerAnalytics = async (req, res) => {
             (fabricCount[fabricType] || 0) + parseInt(item.quantity || 1);
         }
 
-        // Category preference
         const pattern = item.inventory_item?.pattern;
         if (pattern) {
           patternCount[pattern] =
             (patternCount[pattern] || 0) + parseInt(item.quantity || 1);
         }
 
-        // Profit calculation
         const buyPrice = parseFloat(item.buy_price_snapshot || 0);
         const sellPrice = parseFloat(item.total_price || 0);
         const itemWeight = parseFloat(item.weight || 0);
@@ -357,20 +347,16 @@ export const getCustomerAnalytics = async (req, res) => {
       });
     });
 
-    // Find preferred fabric type
     const preferredFabric = Object.keys(fabricCount).reduce((a, b) =>
       fabricCount[a] > fabricCount[b] ? a : b
     );
 
-    // Find preferred category
     const preferredPattern = Object.keys(patternCount).reduce((a, b) =>
       patternCount[a] > patternCount[b] ? a : b
     );
 
-    // Calculate average purchase value
     const avgPurchaseValue = totalSpent / invoices.length;
 
-    // Calculate purchase frequency (days between purchases)
     let avgDaysBetweenPurchases = 0;
     if (purchaseDates.length > 1) {
       const daysBetween = [];
@@ -383,7 +369,6 @@ export const getCustomerAnalytics = async (req, res) => {
         daysBetween.reduce((a, b) => a + b, 0) / daysBetween.length;
     }
 
-    // Find best buying day
     const bestDayOfWeek = Object.keys(dayOfWeekCount).reduce((a, b) =>
       dayOfWeekCount[a] > dayOfWeekCount[b] ? a : b
     );
@@ -397,7 +382,6 @@ export const getCustomerAnalytics = async (req, res) => {
       "Saturday",
     ];
 
-    // Find best buying month
     const bestMonth = Object.keys(monthCount).reduce((a, b) =>
       monthCount[a] > monthCount[b] ? a : b
     );
@@ -416,7 +400,6 @@ export const getCustomerAnalytics = async (req, res) => {
       "December",
     ];
 
-    // Determine customer type
     let customerType = "new_customer";
     if (invoices.length >= 10) {
       customerType = "vip_customer";
@@ -426,7 +409,6 @@ export const getCustomerAnalytics = async (req, res) => {
       customerType = "returning_customer";
     }
 
-    // Generate insights
     const insights = [];
 
     if (invoices.length >= 3) {
@@ -449,7 +431,6 @@ export const getCustomerAnalytics = async (req, res) => {
       insights.push("profitable_customer");
     }
 
-    // Holiday/seasonal buying pattern
     const recentMonths = purchaseDates
       .slice(-3)
       .map((d) => new Date(d).getMonth());
@@ -458,8 +439,7 @@ export const getCustomerAnalytics = async (req, res) => {
       insights.push("consistent_buyer");
     }
 
-    // Check if likely to buy during holidays (Nov, Dec, Jan for holidays)
-    const holidayMonths = [10, 11, 0]; // Nov, Dec, Jan
+    const holidayMonths = [10, 11, 0];
     const holidayPurchases = purchaseDates.filter((d) =>
       holidayMonths.includes(new Date(d).getMonth())
     ).length;
@@ -633,21 +613,20 @@ export const scanIDCard = async (req, res) => {
     }
 
     const imageMetadata = await sharp(req.file.path).metadata();
-    
-    // Redact the left 35% of the ID card (where the photo is typically located on Kuwait Civil IDs)
+
     const redactWidth = Math.floor(imageMetadata.width * 0.35);
     const redactHeight = imageMetadata.height;
 
     const redactedBuffer = await sharp(req.file.path)
-      .rotate() // Auto-rotate based on EXIF
+      .rotate()
       .composite([{
-        input: { 
-          create: { 
-            width: redactWidth, 
-            height: redactHeight, 
-            channels: 4, 
-            background: { r: 0, g: 0, b: 0, alpha: 1 } 
-          } 
+        input: {
+          create: {
+            width: redactWidth,
+            height: redactHeight,
+            channels: 4,
+            background: { r: 0, g: 0, b: 0, alpha: 1 }
+          }
         },
         top: 0,
         left: 0
@@ -730,8 +709,8 @@ export const getCustomerHistory = async (req, res) => {
       offset: offset
     });
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: history,
       pagination: {
         currentPage: pageNum,

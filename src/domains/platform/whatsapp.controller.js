@@ -44,8 +44,8 @@ export const connect = async (req, res) => {
   const finish = () => {
     if (ended) return;
     ended = true;
-    try { 
-      res.end(); 
+    try {
+      res.end();
     } catch (endError) {
       logErr('Failed to end SSE response', { error: endError?.message });
     }
@@ -109,9 +109,9 @@ export const disconnect = async (req, res) => {
 export const updateSettings = async (req, res) => {
   try {
     const { is_enabled, owner_phone, manager_phone } = req.body;
-    
+
     let config = await WhatsappConfig.findOne({ where: { tenant_slug: req.tenant.slug } });
-    
+
     if (!config) {
       config = await WhatsappConfig.create({
         tenant_slug: req.tenant.slug,
@@ -140,50 +140,45 @@ export const getSettings = async (req, res) => {
   }
 };
 
-/** POST /whatsapp/bulk — send message to segmented customers. store_owner only. */
 export const sendBulk = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
     const { segment, branch_id, message, delay_ms } = req.body;
     const tenantSlug = req.tenant.slug;
-    
-    // Check WhatsApp connection status before starting
-    // If branch_id is provided, check branch-level connection
-    // If not provided, try tenant-level first, then fallback to any branch connection
+
     let branchIdForCheck = branch_id ? parseInt(branch_id, 10) : null;
     let waStatus = await whatsappService.getSessionStatus(tenantSlug, branchIdForCheck);
-    
-    // If tenant-level not connected and no branch_id provided, try to find any connected branch
+
     if (!branchIdForCheck && (waStatus.status !== 'CONNECTED' && !waStatus.is_ready)) {
       try {
-        // Try to find any connected branch
+
         const Branch = sequelize.models.Branch;
         const branches = await Branch.schema(schema).findAll({ attributes: ['id'], limit: 50 });
-        
+
         for (const branch of branches) {
           const branchStatus = await whatsappService.getSessionStatus(tenantSlug, branch.id);
           if (branchStatus.status === 'CONNECTED' || branchStatus.is_ready) {
             branchIdForCheck = branch.id;
             waStatus = branchStatus;
-            logger.info('Using branch WhatsApp connection for bulk send', { 
-              component: 'whatsapp.controller', 
-              tenantSlug, 
-              branchId: branchIdForCheck 
+            logger.info('Using branch WhatsApp connection for bulk send', {
+              component: 'whatsapp.controller',
+              tenantSlug,
+              branchId: branchIdForCheck
             });
             break;
           }
         }
       } catch (branchCheckError) {
-        logger.warn('Failed to check branch connections for bulk send', { 
-          component: 'whatsapp.controller', 
-          tenantSlug, 
-          error: branchCheckError?.message 
+        logger.warn('Failed to check branch connections for bulk send', {
+          component: 'whatsapp.controller',
+          tenantSlug,
+          error: branchCheckError?.message
         });
       }
     }
-    
+
     if (waStatus.status !== 'CONNECTED' && !waStatus.is_ready) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         message: `WhatsApp is not connected${branchIdForCheck ? ` for branch ${branchIdForCheck}` : ' (tenant-level)'}. Please connect WhatsApp first.`,
         status: waStatus.status
@@ -269,7 +264,6 @@ export const sendBulk = async (req, res) => {
       messageLength: message.length
     });
 
-    // Use branch-specific WhatsApp if branch_id is provided, otherwise use the found connection
     const branchIdForSend = branch_id ? parseInt(branch_id, 10) : branchIdForCheck;
     for (let i = 0; i < phones.length; i++) {
       const phone = phones[i];
@@ -282,7 +276,7 @@ export const sendBulk = async (req, res) => {
             component: 'whatsapp.controller',
             tenantSlug,
             branchId: branchIdForSend,
-            phone: phone.substring(0, 4) + '****' + phone.substring(phone.length - 2), // Partial phone for privacy
+            phone: phone.substring(0, 4) + '****' + phone.substring(phone.length - 2),
             index: i + 1,
             total: phones.length
           });
@@ -325,9 +319,9 @@ export const sendBulk = async (req, res) => {
       failedCount: failedPhones.length
     });
 
-    res.json({ 
-      success: true, 
-      sent, 
+    res.json({
+      success: true,
+      sent,
       total: phones.length,
       failed: failedPhones.length,
       details: {

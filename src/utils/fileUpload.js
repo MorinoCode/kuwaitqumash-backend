@@ -19,7 +19,6 @@ const sanitizeSegment = (s) =>
     .replace(/_+/g, "_")
     .replace(/^_|_$/g, "") || "general";
 
-/** Build store-scoped path: {store}/customers|inventory/{subPath}. subPath may contain / e.g. "Ring/BRC123". */
 const buildPath = (store, folderType, subPath) => {
   const safeStore = sanitizeSegment(String(store));
   const parts = (subPath || "general")
@@ -34,14 +33,6 @@ const buildPath = (store, folderType, subPath) => {
   };
 };
 
-/**
- * Save image. Store-scoped: gold_app/{store}/customers|inventory/{subPath}.
- * Images are processed and uploaded directly to Cloudinary (no local storage).
- * @param {object} file - Multer file
- * @param {'customers'|'inventory'} folderType
- * @param {string} subFolder - e.g. civil_id, or "category/barcode" for inventory
- * @param {string} store - tenant slug (required for isolation)
- */
 export const saveImage = async (file, folderType, subFolder, store) => {
   if (!file) return null;
 
@@ -52,13 +43,11 @@ export const saveImage = async (file, folderType, subFolder, store) => {
 
   const filename = `${folderType}-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 
-  // Process image in memory (resize and convert to webp)
   const processedBuffer = await sharp(file.path)
     .resize(600, 600, { fit: "inside", withoutEnlargement: true })
     .webp({ quality: 75 })
     .toBuffer();
 
-  // Clean up temp file
   setTimeout(() => {
     try {
       if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
@@ -70,7 +59,6 @@ export const saveImage = async (file, folderType, subFolder, store) => {
     }
   }, 1000);
 
-  // Upload directly to Cloudinary
   return new Promise((resolve, reject) => {
     cloudinary.uploader
       .upload_stream(
@@ -107,14 +95,11 @@ export const saveBranchLogo = async (file, store, branchId) => {
   const safeStore = sanitizeSegment(String(storeVal));
   const filename = `branch-logo-${branchId}-${Date.now()}`;
 
-  // Process image in memory (resize to max 1000x1000, maintain aspect ratio)
-  // Use PNG format to preserve transparency for logos (better for PDF generation)
   const processedBuffer = await sharp(file.path)
     .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
     .png({ quality: 100, compressionLevel: 6, adaptiveFiltering: true })
     .toBuffer();
 
-  // Clean up temp file
   setTimeout(() => {
     try {
       if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
@@ -126,7 +111,6 @@ export const saveBranchLogo = async (file, store, branchId) => {
     }
   }, 1000);
 
-  // Upload directly to Cloudinary
   return new Promise((resolve, reject) => {
     cloudinary.uploader
       .upload_stream(
@@ -134,7 +118,7 @@ export const saveBranchLogo = async (file, store, branchId) => {
           folder: `${ROOT}/${safeStore}/branches`,
           public_id: filename,
           resource_type: "image",
-          format: "png", // Use PNG to preserve transparency
+          format: "png",
         },
         (error, result) => {
           if (error) {
@@ -159,7 +143,6 @@ export const saveBranchLogo = async (file, store, branchId) => {
 export const deleteImage = async (imageUrl) => {
   if (!imageUrl) return;
 
-  // Only delete from Cloudinary (no local storage)
   if (imageUrl.includes("cloudinary.com")) {
     try {
       const splitUrl = imageUrl.split("/");

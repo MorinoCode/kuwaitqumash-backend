@@ -14,7 +14,6 @@ export const getOwnerDashboard = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
 
-    // Get date range from query params if provided
     const { startDate, endDate } = req.query;
     let dateFilterStart = null;
     let dateFilterEnd = null;
@@ -22,14 +21,13 @@ export const getOwnerDashboard = async (req, res) => {
     if (startDate && endDate) {
       dateFilterStart = new Date(startDate);
       dateFilterEnd = new Date(endDate);
-      // Set time to start/end of day
+
       dateFilterStart.setHours(0, 0, 0, 0);
       dateFilterEnd.setHours(23, 59, 59, 999);
     }
 
     const cacheKey = `dashboard:owner:${req.tenant.slug}:${startDate || "today"}:${endDate || "today"}`;
 
-    // Try to get from cache (Redis or in-memory fallback) - only if no custom date range
     if (!startDate && !endDate) {
       const dashboardData = await cacheGet(cacheKey);
       if (dashboardData) {
@@ -47,7 +45,6 @@ export const getOwnerDashboard = async (req, res) => {
       }
     }
 
-    // Fallback to database if cache miss or Redis unavailable
     logger.info("Owner dashboard fetching from database", {
       component: "dashboard",
       tenant: req.tenant.slug,
@@ -56,7 +53,6 @@ export const getOwnerDashboard = async (req, res) => {
       requestId: req.requestId,
     });
 
-    // Use custom date range if provided, otherwise use today
     const todayStart = dateFilterStart || new Date();
     if (!dateFilterStart) {
       todayStart.setHours(0, 0, 0, 0);
@@ -127,7 +123,6 @@ export const getOwnerDashboard = async (req, res) => {
     const avgSaleValue =
       invoicesToday.length > 0 ? totalSalesToday / invoicesToday.length : 0;
 
-    // Month-to-date fabric KPIs (last 30 days)
     const monthInvoices = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: monthStart },
@@ -144,7 +139,6 @@ export const getOwnerDashboard = async (req, res) => {
       0,
     );
 
-    // Total Inventory Value
     const inventoryItems = await InventoryItem.schema(schema).findAll({
       where: { status: "In Stock" },
       attributes: ["length_m", "cost_per_meter", "quantity"],
@@ -159,14 +153,12 @@ export const getOwnerDashboard = async (req, res) => {
       totalInventoryValue += value;
     });
 
-    // Active Branches Count (count all branches, as there's no is_active field)
     const activeBranches = await Branch.schema(schema).count();
 
     const whatsappConfig = await WhatsappConfig.findOne({
       where: { tenant_slug: req.tenant.slug },
     });
 
-    // Sales Trend (7 days)
     const salesTrend7Days = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: weekStart },
@@ -181,7 +173,6 @@ export const getOwnerDashboard = async (req, res) => {
       raw: true,
     });
 
-    // Sales Trend (30 days)
     const salesTrend30Days = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: monthStart },
@@ -196,7 +187,6 @@ export const getOwnerDashboard = async (req, res) => {
       raw: true,
     });
 
-    // Sales by Branch (only if >1 branch)
     const branchSales = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.between]: [todayStart, todayEnd] },
@@ -214,10 +204,9 @@ export const getOwnerDashboard = async (req, res) => {
       nest: true,
     });
 
-    // Sales by fabric type + color
     const categoryFabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
         ii.fabric_type,
         it.fabric_type,
@@ -229,8 +218,8 @@ export const getOwnerDashboard = async (req, res) => {
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_at >= :dateStart 
-        AND inv.created_at <= :dateEnd 
+      WHERE inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
         AND inv.status = 'Paid'
       GROUP BY it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
@@ -249,18 +238,17 @@ export const getOwnerDashboard = async (req, res) => {
       quantity: parseInt(item.quantity || 0),
     }));
 
-    // Sales by fabric type
     const fabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_at >= :dateStart 
-        AND inv.created_at <= :dateEnd 
+      WHERE inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
         AND inv.status = 'Paid'
         AND it.fabric_type IS NOT NULL
       GROUP BY it.fabric_type
@@ -272,10 +260,9 @@ export const getOwnerDashboard = async (req, res) => {
       },
     );
 
-    // Top 5 Selling Items (by Revenue)
     const topItemsRevenue = await sequelize.query(
       `
-      SELECT 
+      SELECT
         ii.id,
         ii.item_name AS name,
         ii.fabric_type,
@@ -288,8 +275,8 @@ export const getOwnerDashboard = async (req, res) => {
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_at >= :dateStart 
-        AND inv.created_at <= :dateEnd 
+      WHERE inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
         AND inv.status = 'Paid'
       GROUP BY it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
@@ -310,7 +297,6 @@ export const getOwnerDashboard = async (req, res) => {
       quantity: parseInt(item.quantity || 0),
     }));
 
-    // Top 5 Customers (by value)
     const topCustomers = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.between]: [todayStart, todayEnd] },
@@ -334,7 +320,6 @@ export const getOwnerDashboard = async (req, res) => {
       nest: true,
     });
 
-    // Low Stock Items
     const lowStockItems = await InventoryItem.schema(schema).findAll({
       where: {
         status: "In Stock",
@@ -402,9 +387,8 @@ export const getOwnerDashboard = async (req, res) => {
       last_updated: new Date().toISOString(),
     };
 
-    // Cache result (Redis or in-memory) when no custom date range
     if (!startDate && !endDate) {
-      await cacheSet(cacheKey, dashboardData, 60); // 60 seconds TTL
+      await cacheSet(cacheKey, dashboardData, 60);
     }
 
     res.json({
@@ -437,7 +421,6 @@ export const getManagerDashboard = async (req, res) => {
     const branchId = req.user.branch_id;
     const schema = req.tenant.db_schema;
 
-    // Get date range from query params if provided
     const { startDate, endDate } = req.query;
     let dateFilterStart = null;
     let dateFilterEnd = null;
@@ -445,14 +428,13 @@ export const getManagerDashboard = async (req, res) => {
     if (startDate && endDate) {
       dateFilterStart = new Date(startDate);
       dateFilterEnd = new Date(endDate);
-      // Set time to start/end of day
+
       dateFilterStart.setHours(0, 0, 0, 0);
       dateFilterEnd.setHours(23, 59, 59, 999);
     }
 
     const cacheKey = `dashboard:manager:${req.tenant.slug}:${branchId}:${startDate || "today"}:${endDate || "today"}`;
 
-    // Try to get from cache (Redis or in-memory) - only if no custom date range
     if (!startDate && !endDate) {
       const dashboardData = await cacheGet(cacheKey);
       if (dashboardData) {
@@ -471,7 +453,6 @@ export const getManagerDashboard = async (req, res) => {
       }
     }
 
-    // Fallback to database if cache miss or Redis unavailable
     logger.info("Manager dashboard fetching from database", {
       component: "dashboard",
       tenant: req.tenant.slug,
@@ -481,7 +462,6 @@ export const getManagerDashboard = async (req, res) => {
       requestId: req.requestId,
     });
 
-    // Use custom date range if provided, otherwise use today
     const todayStart = dateFilterStart || new Date();
     if (!dateFilterStart) {
       todayStart.setHours(0, 0, 0, 0);
@@ -512,7 +492,7 @@ export const getManagerDashboard = async (req, res) => {
       topItemsRevenue,
       topCustomers,
     ] = await Promise.all([
-      // 1. branchInvoicesToday
+
       Invoice.schema(schema).findAll({
         where: {
           branch_id: branchId,
@@ -521,7 +501,7 @@ export const getManagerDashboard = async (req, res) => {
         },
         include: [{ model: InvoiceItem.schema(schema), as: "items" }],
       }),
-      // 2. lowStockItems
+
       InventoryItem.schema(schema).findAll({
         where: {
           branch_id: branchId,
@@ -537,7 +517,7 @@ export const getManagerDashboard = async (req, res) => {
         ],
         limit: 20,
       }),
-      // 3. salesTrend7Days
+
       Invoice.schema(schema).findAll({
         where: {
           branch_id: branchId,
@@ -552,7 +532,7 @@ export const getManagerDashboard = async (req, res) => {
         order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
         raw: true,
       }),
-      // 4. salesTrend30Days
+
       Invoice.schema(schema).findAll({
         where: {
           branch_id: branchId,
@@ -567,10 +547,10 @@ export const getManagerDashboard = async (req, res) => {
         order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
         raw: true,
       }),
-      // 5. categoryFabricSales
+
       sequelize.query(
         `
-        SELECT 
+        SELECT
           CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
           ii.fabric_type,
           it.fabric_type,
@@ -588,18 +568,18 @@ export const getManagerDashboard = async (req, res) => {
           type: sequelize.QueryTypes.SELECT,
         },
       ),
-      // 6. fabricSales
+
       sequelize.query(
         `
-        SELECT 
+        SELECT
           it.fabric_type,
           SUM(it.total_price) AS revenue,
           COUNT(it.id) AS quantity
         FROM "${schema}".invoice_items it
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
         INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-        WHERE inv.branch_id = :branchId 
-          AND inv.created_at >= :todayStart 
+        WHERE inv.branch_id = :branchId
+          AND inv.created_at >= :todayStart
           AND inv.status = 'Paid'
           AND it.fabric_type IS NOT NULL
         GROUP BY it.fabric_type
@@ -610,7 +590,7 @@ export const getManagerDashboard = async (req, res) => {
           type: sequelize.QueryTypes.SELECT,
         },
       ),
-      // 7. staffPerformanceToday
+
       Invoice.schema(schema).findAll({
         where: {
           branch_id: branchId,
@@ -643,7 +623,7 @@ export const getManagerDashboard = async (req, res) => {
         raw: true,
         nest: true,
       }),
-      // 8. staffPerformanceWeek
+
       Invoice.schema(schema).findAll({
         where: {
           branch_id: branchId,
@@ -676,7 +656,7 @@ export const getManagerDashboard = async (req, res) => {
         raw: true,
         nest: true,
       }),
-      // 9. staffPerformanceMonth
+
       Invoice.schema(schema).findAll({
         where: {
           branch_id: branchId,
@@ -709,10 +689,10 @@ export const getManagerDashboard = async (req, res) => {
         raw: true,
         nest: true,
       }),
-      // 10. topItemsRevenue
+
       sequelize.query(
         `
-        SELECT 
+        SELECT
           ii.id,
           ii.item_name AS name,
           ii.fabric_type,
@@ -732,7 +712,7 @@ export const getManagerDashboard = async (req, res) => {
           type: sequelize.QueryTypes.SELECT,
         },
       ),
-      // 11. topCustomers
+
       Invoice.schema(schema).findAll({
         where: {
           branch_id: branchId,
@@ -778,8 +758,6 @@ export const getManagerDashboard = async (req, res) => {
       branchInvoicesToday.length > 0
         ? branchSalesToday / branchInvoicesToday.length
         : 0;
-
-
 
     const dashboardData = {
       kpi: {
@@ -848,7 +826,6 @@ export const getManagerDashboard = async (req, res) => {
       last_updated: new Date().toISOString(),
     };
 
-    // Cache result when no custom date range
     if (!startDate && !endDate) {
       await cacheSet(cacheKey, dashboardData, 60);
     }
@@ -883,7 +860,6 @@ export const getSalesmanDashboard = async (req, res) => {
     const schema = req.tenant.db_schema;
     const cacheKey = `dashboard:salesman:${req.tenant.slug}:${userId}`;
 
-    // Try to get from cache (Redis or in-memory)
     const cachedData = await cacheGet(cacheKey);
     if (cachedData) {
       logger.info("Salesman dashboard served from cache", {
@@ -900,7 +876,6 @@ export const getSalesmanDashboard = async (req, res) => {
       });
     }
 
-    // Fallback to database if cache miss or Redis unavailable
     logger.info("Salesman dashboard fetching from database", {
       component: "dashboard",
       tenant: req.tenant.slug,
@@ -933,7 +908,6 @@ export const getSalesmanDashboard = async (req, res) => {
     const avgSaleValue =
       invoicesToday.length > 0 ? mySalesToday / invoicesToday.length : 0;
 
-    // Sales Trend (7 days)
     const salesTrend7Days = await Invoice.schema(schema).findAll({
       where: {
         created_by: userId,
@@ -949,10 +923,9 @@ export const getSalesmanDashboard = async (req, res) => {
       raw: true,
     });
 
-    // Sales by fabric type + color
     const categoryFabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
         ii.fabric_type,
         it.fabric_type,
@@ -971,18 +944,17 @@ export const getSalesmanDashboard = async (req, res) => {
       },
     );
 
-    // Sales by fabric type
     const fabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_by = :userId 
-        AND inv.created_at >= :todayStart 
+      WHERE inv.created_by = :userId
+        AND inv.created_at >= :todayStart
         AND inv.status = 'Paid'
         AND it.fabric_type IS NOT NULL
       GROUP BY it.fabric_type
@@ -994,10 +966,9 @@ export const getSalesmanDashboard = async (req, res) => {
       },
     );
 
-    // Top 5 Items I Sold
     const topItems = await sequelize.query(
       `
-      SELECT 
+      SELECT
         ii.id,
         ii.item_name AS name,
         ii.fabric_type,
@@ -1050,7 +1021,6 @@ export const getSalesmanDashboard = async (req, res) => {
       last_updated: new Date().toISOString(),
     };
 
-    // Cache result
     await cacheSet(cacheKey, dashboardData, 60);
 
     res.json({
@@ -1087,14 +1057,12 @@ export const getDashboardAnalytics = async (req, res) => {
     } = req.query;
     const schema = req.tenant.db_schema;
 
-    // Validate required parameters
     if (!startDate || !endDate) {
       return res.status(400).json({
         message: "startDate and endDate are required",
       });
     }
 
-    // Validate date format
     const start = new Date(startDate);
     const end = new Date(endDate);
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
@@ -1110,13 +1078,12 @@ export const getDashboardAnalytics = async (req, res) => {
       });
     }
 
-    // ✅ SECURITY FIX: If user is branch_manager or sales_man, restrict to their branch only
     let branchFilter = {};
     if (req.user.role === "branch_manager" || req.user.role === "sales_man") {
-      // Force branch_manager and sales_man to only see their own branch
+
       branchFilter.branch_id = req.user.branch_id;
     } else if (branchIds) {
-      // For store_owner, allow selecting multiple branches
+
       const branchArray = Array.isArray(branchIds)
         ? branchIds
         : branchIds.split(",").map((id) => parseInt(id));
@@ -1127,7 +1094,7 @@ export const getDashboardAnalytics = async (req, res) => {
 
     const fetchPeriodData = async (start, end) => {
       try {
-        // Ensure dates are Date objects
+
         const startDateObj = start instanceof Date ? start : new Date(start);
         const endDateObj = end instanceof Date ? end : new Date(end);
 
@@ -1137,11 +1104,10 @@ export const getDashboardAnalytics = async (req, res) => {
 
         const dateFilter = {
           createdAt: { [Op.between]: [startDateObj, endDateObj] },
-          status: "Paid", // Only count paid invoices
+          status: "Paid",
         };
         const combinedFilter = { ...dateFilter, ...branchFilter };
 
-        // Debug: Log the date range being queried
         logger.info("Fetching period data", {
           component: "dashboard",
           startDate: start,
@@ -1152,7 +1118,6 @@ export const getDashboardAnalytics = async (req, res) => {
           tenant: req.tenant.slug,
         });
 
-        // 1. KPI Cards
         const totalRevenue =
           (await Invoice.schema(schema).sum("total_amount", {
             where: combinedFilter,
@@ -1191,7 +1156,6 @@ export const getDashboardAnalytics = async (req, res) => {
         const grossProfit = totalRevenue - totalCost;
         const totalQuantity = soldItems.length;
 
-        // 2. Sales Trend - Smart grouping based on date range
         const daysDiff = Math.ceil(
           (endDateObj - startDateObj) / (1000 * 60 * 60 * 24),
         );
@@ -1200,7 +1164,7 @@ export const getDashboardAnalytics = async (req, res) => {
         let salesTrendRaw;
 
         if (daysDiff <= 30) {
-          // Daily grouping for <= 30 days
+
           groupBy = Sequelize.fn("DATE", Sequelize.col("created_at"));
           salesTrendRaw = await Invoice.schema(schema).findAll({
             attributes: [
@@ -1215,10 +1179,10 @@ export const getDashboardAnalytics = async (req, res) => {
             raw: true,
           });
         } else {
-          // Weekly or Monthly grouping - use raw SQL query
+
           const truncType = daysDiff <= 90 ? "week" : "month";
           let query = `
-            SELECT 
+            SELECT
               DATE_TRUNC('${truncType}', created_at) AS date,
               SUM(total_amount) AS revenue,
               SUM(total_meters) AS weight,
@@ -1250,11 +1214,9 @@ export const getDashboardAnalytics = async (req, res) => {
             type: sequelize.QueryTypes.SELECT,
           });
 
-          // Set groupBy for later use (for date formatting)
           groupBy = Sequelize.literal(`DATE_TRUNC('${truncType}', created_at)`);
         }
 
-        // Optimize: Fetch all items with inventory data in one query instead of N+1
         const allDayItems = await InvoiceItem.schema(schema).findAll({
           include: [
             {
@@ -1271,7 +1233,6 @@ export const getDashboardAnalytics = async (req, res) => {
           attributes: ["total_price", "weight", "invoice_id"],
         });
 
-        // Group items by date (support daily, weekly, monthly)
         const itemsByDate = {};
         allDayItems.forEach((item) => {
           if (item.invoice && item.invoice.created_at) {
@@ -1279,19 +1240,19 @@ export const getDashboardAnalytics = async (req, res) => {
             let groupKey;
 
             if (daysDiff <= 30) {
-              // Daily grouping
+
               groupKey = invoiceDate.toISOString().split("T")[0];
             } else if (daysDiff <= 90) {
-              // Weekly grouping - get start of week (Monday)
+
               const weekStart = new Date(invoiceDate);
               const dayOfWeek = invoiceDate.getDay();
               const diff =
-                invoiceDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // Adjust to Monday
+                invoiceDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
               weekStart.setDate(diff);
               weekStart.setHours(0, 0, 0, 0);
               groupKey = weekStart.toISOString().split("T")[0];
             } else {
-              // Monthly grouping - get start of month
+
               const monthStart = new Date(
                 invoiceDate.getFullYear(),
                 invoiceDate.getMonth(),
@@ -1308,14 +1269,14 @@ export const getDashboardAnalytics = async (req, res) => {
         });
 
         const salesTrendWithProfit = salesTrendRaw.map((period) => {
-          // Normalize date format for matching
+
           let periodKey;
           if (period.date) {
             const periodDate = new Date(period.date);
             if (daysDiff <= 30) {
               periodKey = periodDate.toISOString().split("T")[0];
             } else if (daysDiff <= 90) {
-              // Weekly - get start of week
+
               const weekStart = new Date(periodDate);
               const dayOfWeek = periodDate.getDay();
               const diff =
@@ -1324,7 +1285,7 @@ export const getDashboardAnalytics = async (req, res) => {
               weekStart.setHours(0, 0, 0, 0);
               periodKey = weekStart.toISOString().split("T")[0];
             } else {
-              // Monthly - get start of month
+
               const monthStart = new Date(
                 periodDate.getFullYear(),
                 periodDate.getMonth(),
@@ -1351,7 +1312,6 @@ export const getDashboardAnalytics = async (req, res) => {
           };
         });
 
-        // 3. Category Distribution
         let categoryQuery = `
           SELECT ii.fabric_type AS name, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity
           FROM "${schema}".invoice_items it
@@ -1382,7 +1342,6 @@ export const getDashboardAnalytics = async (req, res) => {
           type: sequelize.QueryTypes.SELECT,
         });
 
-        // Optimize: fetch all pattern items in one query
         const allCategoryItems = await InvoiceItem.schema(schema).findAll({
           include: [
             {
@@ -1399,7 +1358,6 @@ export const getDashboardAnalytics = async (req, res) => {
           attributes: ["total_price", "meters", "quantity"],
         });
 
-        // Group items by pattern
         const itemsByCategory = {};
         allCategoryItems.forEach((item) => {
           const pattern = item.inventory_item?.pattern;
@@ -1428,7 +1386,6 @@ export const getDashboardAnalytics = async (req, res) => {
           };
         });
 
-        // 4. Fabric distribution
         let fabricQuery = `
           SELECT it.fabric_type, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity, SUM(it.meters * COALESCE(it.quantity,1)) AS meters
           FROM "${schema}".invoice_items it
@@ -1453,9 +1410,9 @@ export const getDashboardAnalytics = async (req, res) => {
           }
         }
 
-        fabricQuery += ` 
+        fabricQuery += `
           AND it.fabric_type IS NOT NULL
-          GROUP BY it.fabric_type 
+          GROUP BY it.fabric_type
           ORDER BY it.fabric_type ASC`;
 
         const fabricRaw = await sequelize.query(fabricQuery, {
@@ -1463,7 +1420,6 @@ export const getDashboardAnalytics = async (req, res) => {
           type: sequelize.QueryTypes.SELECT,
         });
 
-        // Optimize: fetch all fabric items in one query
         const allFabricItems = await InvoiceItem.schema(schema).findAll({
           include: [
             {
@@ -1475,7 +1431,6 @@ export const getDashboardAnalytics = async (req, res) => {
           attributes: ["total_price", "meters"],
         });
 
-        // Group sold lines by fabric type
         const itemsByFabric = {};
         allFabricItems.forEach((item) => {
           const fabricKey = item.inventory_item?.fabric_type || "Other";
@@ -1502,7 +1457,6 @@ export const getDashboardAnalytics = async (req, res) => {
           };
         });
 
-        // 5. Branch Performance
         const branchRaw = await Invoice.schema(schema).findAll({
           attributes: [
             "branch_id",
@@ -1514,7 +1468,6 @@ export const getDashboardAnalytics = async (req, res) => {
           raw: true,
         });
 
-        // Optimize: Fetch all branches and items in parallel
         const [branches, allBranchItems] = await Promise.all([
           Branch.schema(schema).findAll({
             where: {
@@ -1539,13 +1492,11 @@ export const getDashboardAnalytics = async (req, res) => {
           }),
         ]);
 
-        // Create branch lookup map
         const branchMap = {};
         branches.forEach((b) => {
           branchMap[b.id] = b.name;
         });
 
-        // Group items by branch
         const itemsByBranch = {};
         allBranchItems.forEach((item) => {
           const branchId = item.invoice?.branch_id;
@@ -1601,14 +1552,12 @@ export const getDashboardAnalytics = async (req, res) => {
       }
     };
 
-    // Determine data source (cache or live)
     const cacheKey = `analytics:${req.tenant.slug}:${startDate}:${endDate}:${branchIds || "all"}`;
     let dataSource = "live";
     let lastUpdated = new Date().toISOString();
     let nextUpdate = null;
     let currentPeriod = null;
 
-    // Debug: Log the request parameters
     logger.info("Analytics request", {
       component: "dashboard",
       startDate,
@@ -1621,11 +1570,10 @@ export const getDashboardAnalytics = async (req, res) => {
       ),
     });
 
-    // Try to get from cache (Redis or in-memory)
     const cachedData = await cacheGet(cacheKey);
     if (cachedData) {
       if (cachedData && cachedData.current) {
-        // Verify cached data matches requested date range
+
         const cachedStartDate =
           cachedData.current?.charts?.sales_trend?.[0]?.date;
         const cachedEndDate =
@@ -1642,35 +1590,33 @@ export const getDashboardAnalytics = async (req, res) => {
           requestedEndDate: endDate,
         });
 
-        // If cache exists and seems valid, use it
         dataSource = "cache";
         currentPeriod = cachedData.current;
         lastUpdated = cachedData.last_updated || lastUpdated;
-        // Next update is 1 hour from last update
+
         const nextUpdateDate = new Date(lastUpdated);
         nextUpdateDate.setHours(nextUpdateDate.getHours() + 1);
         nextUpdate = nextUpdateDate.toISOString();
       } else {
-        // Cache miss - fetch from database
+
         logger.info("Cache miss, fetching from database", {
           component: "dashboard",
           cacheKey,
         });
         currentPeriod = await fetchPeriodData(start, end);
-        // Calculate next update (1 hour from now)
+
         const nextUpdateDate = new Date();
         nextUpdateDate.setHours(nextUpdateDate.getHours() + 1);
         nextUpdate = nextUpdateDate.toISOString();
       }
     } else {
-      // Cache miss - fetch from database
+
       logger.debug("Cache miss, fetching from database", {
         component: "dashboard",
       });
       currentPeriod = await fetchPeriodData(start, end);
     }
 
-    // If currentPeriod is still null (shouldn't happen, but safety check)
     if (!currentPeriod) {
       logger.warn("CurrentPeriod is null, fetching again", {
         component: "dashboard",
@@ -1685,7 +1631,6 @@ export const getDashboardAnalytics = async (req, res) => {
       next_update: nextUpdate,
     };
 
-    // Handle both string 'true' and boolean true
     const shouldCompare = compare === "true" || compare === true;
 
     if (shouldCompare) {
@@ -1694,10 +1639,9 @@ export const getDashboardAnalytics = async (req, res) => {
 
       let prevStart, prevEnd;
 
-      // Calculate previous period based on compareType
       switch (compareType) {
         case "previous_week": {
-          // Same day last week
+
           prevEnd = new Date(currEnd);
           prevEnd.setDate(prevEnd.getDate() - 7);
           prevStart = new Date(currStart);
@@ -1705,7 +1649,7 @@ export const getDashboardAnalytics = async (req, res) => {
           break;
         }
         case "previous_month": {
-          // Same period last month
+
           prevEnd = new Date(currEnd);
           prevEnd.setMonth(prevEnd.getMonth() - 1);
           prevStart = new Date(currStart);
@@ -1713,7 +1657,7 @@ export const getDashboardAnalytics = async (req, res) => {
           break;
         }
         case "same_month_last_year": {
-          // Same month last year
+
           prevEnd = new Date(currEnd);
           prevEnd.setFullYear(prevEnd.getFullYear() - 1);
           prevStart = new Date(currStart);
@@ -1721,7 +1665,7 @@ export const getDashboardAnalytics = async (req, res) => {
           break;
         }
         case "previous_quarter": {
-          // Same period 3 months ago
+
           prevEnd = new Date(currEnd);
           prevEnd.setMonth(prevEnd.getMonth() - 3);
           prevStart = new Date(currStart);
@@ -1729,7 +1673,7 @@ export const getDashboardAnalytics = async (req, res) => {
           break;
         }
         case "previous_year": {
-          // Same period last year
+
           prevEnd = new Date(currEnd);
           prevEnd.setFullYear(prevEnd.getFullYear() - 1);
           prevStart = new Date(currStart);
@@ -1738,7 +1682,7 @@ export const getDashboardAnalytics = async (req, res) => {
         }
         case "previous_period":
         default: {
-          // Previous period with same duration (original logic)
+
           const diff = currEnd.getTime() - currStart.getTime();
           prevEnd = new Date(currStart.getTime() - 1);
           prevStart = new Date(currStart.getTime() - diff);
@@ -1777,7 +1721,6 @@ export const getDashboardAnalytics = async (req, res) => {
       };
     }
 
-    // Cache the result when data is live (Redis or in-memory fallback)
     if (dataSource === "live") {
       await cacheSet(
         cacheKey,
@@ -1786,7 +1729,7 @@ export const getDashboardAnalytics = async (req, res) => {
           last_updated: lastUpdated,
         },
         3600,
-      ); // Cache for 1 hour
+      );
     }
 
     res.json({ success: true, data: result });
@@ -1803,7 +1746,6 @@ export const getDashboardAnalytics = async (req, res) => {
   }
 };
 
-// Top Performing Items
 export const getTopItems = async (req, res) => {
   try {
     const {
@@ -1815,7 +1757,6 @@ export const getTopItems = async (req, res) => {
     } = req.query;
     const schema = req.tenant.db_schema;
 
-    // Parse branch filter
     let branchFilter = {};
     if (branchIds) {
       const branchArray = branchIds.split(",").map((id) => parseInt(id));
@@ -1824,7 +1765,6 @@ export const getTopItems = async (req, res) => {
       }
     }
 
-    // Date filter
     const dateFilter = {};
     if (startDate && endDate) {
       dateFilter.createdAt = { [Op.between]: [startDate, endDate] };
@@ -1832,10 +1772,9 @@ export const getTopItems = async (req, res) => {
 
     const combinedFilter = { ...dateFilter, ...branchFilter };
 
-    // Get top items (always sort by revenue in SQL since profit is calculated later)
     const topItems = await sequelize.query(
       `
-      SELECT 
+      SELECT
         ii.id,
         ii.item_name AS name,
         ii.fabric_type,
@@ -1857,13 +1796,12 @@ export const getTopItems = async (req, res) => {
           startDate: dateFilter.createdAt?.[Op.between]?.[0] || new Date(0),
           endDate: dateFilter.createdAt?.[Op.between]?.[1] || new Date(),
           branchIds: branchFilter.branch_id?.[Op.in] || [],
-          limit: parseInt(limit) * 2, // Get more items since we'll re-sort after profit calculation
+          limit: parseInt(limit) * 2,
         },
         type: sequelize.QueryTypes.SELECT,
       },
     );
 
-    // Optimize: Fetch all item details in one query instead of N+1
     const itemIds = topItems.map((item) => item.id);
     const allItemDetails = await InvoiceItem.schema(schema).findAll({
       include: [
@@ -1882,7 +1820,6 @@ export const getTopItems = async (req, res) => {
       attributes: ["total_price", "weight", "inventory_item_id"],
     });
 
-    // Group item details by inventory_item_id
     const detailsByItemId = {};
     allItemDetails.forEach((detail) => {
       const itemId = detail.inventory_item_id;
@@ -1894,7 +1831,6 @@ export const getTopItems = async (req, res) => {
       }
     });
 
-    // Group inventory items by id for quick lookup
     const inventoryItemsById = {};
     allItemDetails.forEach((detail) => {
       if (detail.inventory_item) {
@@ -1902,7 +1838,6 @@ export const getTopItems = async (req, res) => {
       }
     });
 
-    // Calculate profit for each item
     const itemsWithProfit = topItems.map((item) => {
       const itemDetails = detailsByItemId[item.id] || [];
       const inventoryItem = inventoryItemsById[item.id];
@@ -1929,7 +1864,6 @@ export const getTopItems = async (req, res) => {
       };
     });
 
-    // Re-sort based on selected metric and return only requested limit
     itemsWithProfit.sort((a, b) => b[metric] - a[metric]);
 
     res.json({

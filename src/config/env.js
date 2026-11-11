@@ -30,27 +30,25 @@ if (!skipValidation) {
   const missing = REQUIRED.filter((k) => !process.env[k]?.trim());
 
   if (missing.length > 0) {
-     
+
     console.error("[env] Missing required env vars:", missing.join(", "));
-     
+
     console.error("[env] Add them to .env and restart.");
     process.exit(1);
   }
 }
 
-// Set optional defaults
 for (const [key, defaultValue] of Object.entries(OPTIONAL_WITH_DEFAULTS)) {
   if (!process.env[key]) {
     process.env[key] = defaultValue;
   }
 }
 
-// Validate Cloudinary config if provided
 if (
   process.env.CLOUDINARY_CLOUD_NAME &&
   (!process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET)
 ) {
-   
+
   console.warn(
     "[env] Warning: Cloudinary cloud name provided but API key/secret missing."
   );

@@ -8,8 +8,6 @@ import Customer from "../customers/customer.model.js";
 import logger from "../../utils/logger.js";
 import { saveBranchLogo, deleteImage } from "../../utils/fileUpload.js";
 
-// --- Branch Management ---
-
 export const createBranch = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
@@ -43,7 +41,6 @@ export const getBranches = async (req, res) => {
     const schema = req.tenant.db_schema;
     let whereClause = {};
 
-    // ✅ FIX: اگر مدیر شعبه بود، فقط شعبه خودش را ببیند
     if (req.user.role === "branch_manager" || req.user.role === "sales_man") {
       whereClause = { id: req.user.branch_id };
     }
@@ -173,7 +170,6 @@ export const uploadBranchLogo = async (req, res) => {
       return res.status(404).json({ message: "Branch not found" });
     }
 
-    // Check permissions: only store_owner and branch_manager can upload logo
     if (req.user.role !== "store_owner" && req.user.role !== "branch_manager") {
       return res.status(403).json({
         message:
@@ -187,12 +183,10 @@ export const uploadBranchLogo = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    // Validate file size (max 5MB)
     if (req.file.size > 5 * 1024 * 1024) {
       return res.status(400).json({ message: "File size exceeds 5MB limit" });
     }
 
-    // Delete old logo if exists
     if (branch.logo_url) {
       try {
         await deleteImage(branch.logo_url);
@@ -204,13 +198,10 @@ export const uploadBranchLogo = async (req, res) => {
       }
     }
 
-    // Upload new logo
     const logoUrl = await saveBranchLogo(req.file, tenantSlug, id);
 
-    // Update branch with new logo URL
     await branch.update({ logo_url: logoUrl });
 
-    // Reload branch to ensure we have the latest data from database
     await branch.reload();
 
     res.json({
@@ -240,7 +231,6 @@ export const deleteBranchLogo = async (req, res) => {
       return res.status(404).json({ message: "Branch not found" });
     }
 
-    // Check permissions: only store_owner and branch_manager can delete logo
     if (req.user.role !== "store_owner" && req.user.role !== "branch_manager") {
       return res.status(403).json({
         message:
@@ -258,7 +248,6 @@ export const deleteBranchLogo = async (req, res) => {
       return res.status(404).json({ message: "No logo found to delete" });
     }
 
-    // Delete from Cloudinary
     try {
       await deleteImage(branch.logo_url);
     } catch (error) {
@@ -268,10 +257,8 @@ export const deleteBranchLogo = async (req, res) => {
       });
     }
 
-    // Update branch to remove logo URL
     await branch.update({ logo_url: null });
 
-    // Reload branch to ensure we have the latest data from database
     await branch.reload();
 
     res.json({
@@ -327,8 +314,6 @@ export const deleteBranch = async (req, res) => {
       .json({ message: "Failed to process request. Please try again." });
   }
 };
-
-// --- Staff Management ---
 
 export const createStaff = async (req, res) => {
   try {
@@ -397,7 +382,6 @@ export const getStaff = async (req, res) => {
       whereClause.role = { [Op.not]: "store_owner" };
     }
 
-    // Add search filter if provided
     if (search) {
       whereClause[Op.or] = [
         { full_name: { [Op.iLike]: `%${search}%` } },
@@ -405,13 +389,11 @@ export const getStaff = async (req, res) => {
       ];
     }
 
-    // Parse pagination parameters
     const MAX_LIMIT = parseInt(process.env.MAX_PAGINATION_LIMIT) || 200;
     const pageNum = parseInt(page, 10) || 1;
     const limitNum = Math.min(parseInt(limit, 10) || 50, MAX_LIMIT);
     const offset = (pageNum - 1) * limitNum;
 
-    // Get total count for pagination
     const totalCount = await User.schema(schema).count({ where: whereClause });
 
     const staff = await User.schema(schema).findAll({
@@ -518,7 +500,6 @@ export const getStaffById = async (req, res) => {
   }
 };
 
-// Staff AI Analytics - Comprehensive analysis
 export const getStaffAnalytics = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
@@ -538,7 +519,6 @@ export const getStaffAnalytics = async (req, res) => {
       return res.status(403).json({ message: "Access Denied." });
     }
 
-    // Get all invoices with items
     const invoices = await Invoice.schema(schema).findAll({
       where: { created_by: id, status: "Paid" },
       include: [
@@ -571,7 +551,6 @@ export const getStaffAnalytics = async (req, res) => {
       });
     }
 
-    // Calculate analytics
     let totalSales = 0;
     let totalItems = 0;
     let totalMeters = 0;
@@ -589,15 +568,12 @@ export const getStaffAnalytics = async (req, res) => {
       saleAmounts.push(parseFloat(inv.total_amount || 0));
       saleDates.push(new Date(inv.createdAt));
 
-      // Day of week analysis
       const dayOfWeek = new Date(inv.createdAt).getDay();
       dayOfWeekCount[dayOfWeek] = (dayOfWeekCount[dayOfWeek] || 0) + 1;
 
-      // Month analysis
       const month = new Date(inv.createdAt).getMonth();
       monthCount[month] = (monthCount[month] || 0) + 1;
 
-      // Customer analysis
       if (inv.customer_id) {
         customerCount[inv.customer_id] =
           (customerCount[inv.customer_id] || 0) + 1;
@@ -607,7 +583,6 @@ export const getStaffAnalytics = async (req, res) => {
         totalItems += parseInt(item.quantity || 1);
         totalMeters += parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
 
-        // Fabric preference
         const fabricType =
         item.fabric_type || item.inventory_item?.fabric_type || "Other";
         if (fabricType) {
@@ -615,14 +590,12 @@ export const getStaffAnalytics = async (req, res) => {
             (fabricCount[fabricType] || 0) + parseInt(item.quantity || 1);
         }
 
-        // Category preference
         const pattern = item.inventory_item?.pattern;
         if (pattern) {
           patternCount[pattern] =
             (patternCount[pattern] || 0) + parseInt(item.quantity || 1);
         }
 
-        // Profit calculation
         const buyPrice = parseFloat(item.buy_price_snapshot || 0);
         const sellPrice = parseFloat(item.total_price || 0);
         const itemWeight = parseFloat(item.weight || 0);
@@ -630,20 +603,16 @@ export const getStaffAnalytics = async (req, res) => {
       });
     });
 
-    // Find preferred fabric type
     const preferredFabric = Object.keys(fabricCount).reduce((a, b) =>
       fabricCount[a] > fabricCount[b] ? a : b,
     );
 
-    // Find preferred category
     const preferredPattern = Object.keys(patternCount).reduce((a, b) =>
       patternCount[a] > patternCount[b] ? a : b,
     );
 
-    // Calculate average sale value
     const avgSaleValue = totalSales / invoices.length;
 
-    // Calculate sale frequency (days between sales)
     let avgDaysBetweenSales = 0;
     if (saleDates.length > 1) {
       const daysBetween = [];
@@ -655,7 +624,6 @@ export const getStaffAnalytics = async (req, res) => {
         daysBetween.reduce((a, b) => a + b, 0) / daysBetween.length;
     }
 
-    // Find best selling day
     const bestDayOfWeek = Object.keys(dayOfWeekCount).reduce((a, b) =>
       dayOfWeekCount[a] > dayOfWeekCount[b] ? a : b,
     );
@@ -669,7 +637,6 @@ export const getStaffAnalytics = async (req, res) => {
       "Saturday",
     ];
 
-    // Find best selling month
     const bestMonth = Object.keys(monthCount).reduce((a, b) =>
       monthCount[a] > monthCount[b] ? a : b,
     );
@@ -688,10 +655,8 @@ export const getStaffAnalytics = async (req, res) => {
       "December",
     ];
 
-    // Unique customers count
     const uniqueCustomers = Object.keys(customerCount).length;
 
-    // Determine performance level
     let performanceLevel = "new_staff";
     if (invoices.length >= 50) {
       performanceLevel = "top_performer";
@@ -703,7 +668,6 @@ export const getStaffAnalytics = async (req, res) => {
       performanceLevel = "developing_staff";
     }
 
-    // Generate insights
     const insights = [];
 
     if (invoices.length >= 20) {
@@ -726,12 +690,10 @@ export const getStaffAnalytics = async (req, res) => {
       insights.push("profitable_seller");
     }
 
-    // Customer retention
     if (uniqueCustomers > invoices.length * 0.5) {
       insights.push("good_customer_retention");
     }
 
-    // Consistent performance
     const recentMonths = saleDates.slice(-3).map((d) => new Date(d).getMonth());
     const uniqueMonths = [...new Set(recentMonths)];
     if (uniqueMonths.length === 3 && invoices.length >= 10) {

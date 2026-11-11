@@ -20,7 +20,6 @@ const router = express.Router();
 router.use(resolveTenant);
 router.use(protect);
 
-// --- Branch Routes ---
 router.get(
   "/branches",
   restrictTo("store_owner", "branch_manager", "sales_man"),
@@ -62,7 +61,6 @@ router.delete(
   manageController.deleteBranch,
 );
 
-// --- Staff Routes ---
 router.get(
   "/staff",
   restrictTo("store_owner", "branch_manager"),

@@ -22,17 +22,15 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
   const t = await sequelize.transaction();
 
   try {
-    // 1. Create Schema
+
     await sequelize.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`, {
       transaction: t,
     });
 
-    // 2. Set search_path so all syncs (including CustomInventoryOption) create tables in tenant schema
     await sequelize.query(`SET LOCAL search_path TO "${schemaName}", public`, {
       transaction: t,
     });
 
-    // 3. Sync Tables using .schema() method
     await Branch.schema(schemaName).sync({ force: true, transaction: t });
     await User.schema(schemaName).sync({ force: true, transaction: t });
 
@@ -58,10 +56,9 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
       transaction: t,
     });
 
-    // 4. Create Main Branch (Fix: Use store name instead of 'Main Branch')
     const mainBranch = await Branch.schema(schemaName).create(
       {
-        name: (tenantData.name || "Main Branch").toLowerCase(), // Dynamic Name
+        name: (tenantData.name || "Main Branch").toLowerCase(),
         location: "Main Location",
         phone: tenantData.phone,
         is_main: true,
@@ -81,14 +78,10 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
       { transaction: t }
     );
 
-    // Commit transaction before creating indexes (indexes don't need transaction)
     await t.commit();
 
-    // Reset search_path after transaction commit
     await sequelize.query("SET search_path TO public");
 
-    // 6. Create indexes for performance optimization
-    // Note: Indexes are created outside transaction for better compatibility
     try {
       logger.info("Creating indexes for new tenant", {
         component: "schema.manager",
@@ -115,7 +108,6 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
         });
       }
 
-      // Create search indexes (trigram) for fast text search
       try {
         logger.info("Creating search indexes for new tenant", {
           component: "schema.manager",
@@ -144,7 +136,7 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
           });
         }
       } catch (searchIndexError) {
-        // Log error but don't fail tenant creation if search indexes fail
+
         logger.error("Failed to create search indexes (non-critical)", {
           component: "schema.manager",
           schema: schemaName,
@@ -153,7 +145,7 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
         });
       }
     } catch (indexError) {
-      // Log error but don't fail tenant creation if indexes fail
+
       logger.error("Failed to create indexes (non-critical)", {
         component: "schema.manager",
         schema: schemaName,

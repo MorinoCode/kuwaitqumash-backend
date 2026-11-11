@@ -1,10 +1,3 @@
-/**
- * Database Structure Generator
- * 
- * This script connects to the database and generates a detailed structure document
- * Run with: node scripts/generate-db-structure.js
- */
-
 import sequelize from '../src/config/database.js';
 import { QueryTypes } from 'sequelize';
 import fs from 'fs';
@@ -26,8 +19,8 @@ async function generateDatabaseStructure() {
     output += '---\n\n';
 
     const schemas = await sequelize.query(
-      `SELECT schema_name 
-       FROM information_schema.schemata 
+      `SELECT schema_name
+       FROM information_schema.schemata
        WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
        ORDER BY schema_name`,
       { type: QueryTypes.SELECT }
@@ -39,15 +32,13 @@ async function generateDatabaseStructure() {
     });
     output += '\n---\n\n';
 
-    // Process each schema
     for (const schema of schemas) {
       const schemaName = schema.schema_name;
       logger.info('Processing schema', { component: 'generate-db-structure', schema: schemaName });
 
-      // Get tables in schema
       const tables = await sequelize.query(
-        `SELECT table_name 
-         FROM information_schema.tables 
+        `SELECT table_name
+         FROM information_schema.tables
          WHERE table_schema = :schemaName
          ORDER BY table_name`,
         {
@@ -66,9 +57,8 @@ async function generateDatabaseStructure() {
       for (const table of tables) {
         const tableName = table.table_name;
 
-        // Get columns
         const columns = await sequelize.query(
-          `SELECT 
+          `SELECT
             column_name,
             data_type,
             character_maximum_length,
@@ -78,7 +68,7 @@ async function generateDatabaseStructure() {
             column_default,
             udt_name
            FROM information_schema.columns
-           WHERE table_schema = :schemaName 
+           WHERE table_schema = :schemaName
              AND table_name = :tableName
            ORDER BY ordinal_position`,
           {
@@ -87,7 +77,6 @@ async function generateDatabaseStructure() {
           }
         );
 
-        // Get primary keys
         const primaryKeys = await sequelize.query(
           `SELECT column_name
            FROM information_schema.table_constraints tc
@@ -102,7 +91,6 @@ async function generateDatabaseStructure() {
           }
         );
 
-        // Get foreign keys
         const foreignKeys = await sequelize.query(
           `SELECT
             kcu.column_name,
@@ -123,7 +111,6 @@ async function generateDatabaseStructure() {
           }
         );
 
-        // Get unique constraints
         const uniqueConstraints = await sequelize.query(
           `SELECT column_name
            FROM information_schema.table_constraints tc
@@ -141,14 +128,12 @@ async function generateDatabaseStructure() {
 
         output += `### Table: \`${tableName}\`\n\n`;
 
-        // Columns table
         output += '| Column | Type | Nullable | Default | Description |\n';
         output += '|--------|------|----------|---------|-------------|\n';
 
         columns.forEach(col => {
           let type = col.data_type;
-          
-          // Format type with length/precision
+
           if (col.character_maximum_length) {
             type += `(${col.character_maximum_length})`;
           } else if (col.numeric_precision) {
@@ -159,7 +144,6 @@ async function generateDatabaseStructure() {
             type += ')';
           }
 
-          // Check if primary key
           const isPK = primaryKeys.some(pk => pk.column_name === col.column_name);
           const isFK = foreignKeys.some(fk => fk.column_name === col.column_name);
           const isUnique = uniqueConstraints.some(uc => uc.column_name === col.column_name);
@@ -177,7 +161,6 @@ async function generateDatabaseStructure() {
 
         output += '\n';
 
-        // Foreign keys section
         if (foreignKeys.length > 0) {
           output += '**Foreign Keys:**\n';
           foreignKeys.forEach(fk => {
@@ -186,7 +169,6 @@ async function generateDatabaseStructure() {
           output += '\n';
         }
 
-        // Get row count
         try {
           const rowCount = await sequelize.query(
             `SELECT COUNT(*) as count FROM "${schemaName}"."${tableName}"`,
@@ -198,27 +180,24 @@ async function generateDatabaseStructure() {
           output += `**Row Count:** ${rowCount[0]?.count || 0}\n\n`;
         } catch (err) {
           void err;
-          // Ignore errors for row count
+
         }
 
         output += '---\n\n';
       }
     }
 
-    // Write to file
     const outputPath = path.join(__dirname, '..', 'DATABASE_STRUCTURE_AUTO.md');
     fs.writeFileSync(outputPath, output, 'utf8');
     logger.info('Database structure saved', { component: 'generate-db-structure', path: outputPath });
 
     const mainDocPath = path.join(__dirname, '..', 'DATABASE_STRUCTURE.md');
-    const existingContent = fs.existsSync(mainDocPath) 
+    const existingContent = fs.existsSync(mainDocPath)
       ? fs.readFileSync(mainDocPath, 'utf8')
       : '';
-    
-    // Add auto-generated section at the top
+
     const autoGeneratedSection = `<!-- AUTO-GENERATED SECTION - DO NOT EDIT MANUALLY -->\n\n${output}\n\n<!-- END AUTO-GENERATED SECTION -->\n\n`;
-    
-    // If file exists, replace auto-generated section
+
     if (existingContent.includes('<!-- AUTO-GENERATED SECTION')) {
       const beforeAuto = existingContent.split('<!-- AUTO-GENERATED SECTION')[0];
       const afterAuto = existingContent.split('<!-- END AUTO-GENERATED SECTION -->')[1] || '';
@@ -240,5 +219,4 @@ async function generateDatabaseStructure() {
   }
 }
 
-// Run the script
 generateDatabaseStructure();

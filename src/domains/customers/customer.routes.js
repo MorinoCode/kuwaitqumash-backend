@@ -20,9 +20,9 @@ router.get('/:id/analytics', customerController.getCustomerAnalytics);
 router.post('/',
   restrictTo('store_owner', 'branch_manager', 'sales_man'),
   upload.fields([{ name: 'front_image', maxCount: 1 }, { name: 'back_image', maxCount: 1 }]),
-  // Validate after multer processes FormData
+
   (req, res, next) => {
-    // Convert FormData strings to proper types for validation
+
     const body = { ...req.body };
     if (body.branch_id) body.branch_id = body.branch_id ? parseInt(body.branch_id, 10) : null;
     if (body.birth_date === '') body.birth_date = null;
@@ -43,7 +43,7 @@ router.put('/:id',
   customerController.updateCustomer
 );
 
-router.delete('/:id', 
+router.delete('/:id',
   restrictTo('store_owner', 'branch_manager', 'sales_man'),
   customerController.deleteCustomer
 );

@@ -16,12 +16,12 @@ const CustomInventoryOption = sequelize.define(
     },
     fabric_type: {
       type: DataTypes.STRING,
-      allowNull: true, // null for the fabric type itself, required for category/pattern
+      allowNull: true,
       comment: "The fabric type this option belongs to (for category/pattern)",
     },
     category: {
       type: DataTypes.STRING,
-      allowNull: true, // null for metal and category, required for subcategory
+      allowNull: true,
       comment: "The category this subcategory belongs to",
     },
     name: {
@@ -64,13 +64,8 @@ const CustomInventoryOption = sequelize.define(
   }
 );
 
-// Add schema method for multi-tenant support
-// IMPORTANT: The schema is set via search_path in tenant middleware BEFORE this is called
-// So we can use the model directly - search_path ensures queries go to the correct schema
-// This method exists for consistency with other models that use .schema()
 CustomInventoryOption.schema = function (_schemaName) {
-  // Return the model itself - search_path is already set by tenant middleware
-  // Sequelize will use the current search_path for all queries
+
   return this;
 };
 

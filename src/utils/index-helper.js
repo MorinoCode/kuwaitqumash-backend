@@ -1,19 +1,8 @@
-/**
- * Database Index Helper
- *
- * Creates indexes for tenant schemas based on model definitions.
- * Safe to run multiple times (uses IF NOT EXISTS).
- */
-
 import sequelize from "../config/database.js";
 import logger from "./logger.js";
 
-/**
- * Index definitions matching model definitions exactly
- * These names must match the indexes defined in the models
- */
 const getIndexDefinitions = () => [
-  // inventory_items - matching item.model.js
+
   {
     name: "idx_inventory_status",
     table: "inventory_items",
@@ -40,7 +29,6 @@ const getIndexDefinitions = () => [
     columns: ["status", "branch_id"],
   },
 
-  // customers - matching customer.model.js
   { name: "idx_customers_branch", table: "customers", columns: ["branch_id"] },
   {
     name: "idx_customers_created_at",
@@ -50,7 +38,6 @@ const getIndexDefinitions = () => [
   { name: "idx_customers_phone", table: "customers", columns: ["phone"] },
   { name: "idx_customers_civil_id", table: "customers", columns: ["civil_id"] },
 
-  // invoices - matching invoice.model.js
   { name: "idx_invoices_branch", table: "invoices", columns: ["branch_id"] },
   {
     name: "idx_invoices_created_at",
@@ -64,14 +51,10 @@ const getIndexDefinitions = () => [
   },
   { name: "idx_invoices_status", table: "invoices", columns: ["status"] },
 
-
-
-  // refunds
   { name: "idx_refunds_invoice", table: "refunds", columns: ["invoice_id"] },
   { name: "idx_refunds_branch", table: "refunds", columns: ["branch_id"] },
   { name: "idx_refunds_created_at", table: "refunds", columns: ["created_at"] },
 
-  // custom_inventory_options - matching custom-option.model.js
   {
     name: "idx_custom_option_type_fabric",
     table: "custom_inventory_options",
@@ -84,14 +67,8 @@ const getIndexDefinitions = () => [
   },
 ];
 
-/**
- * Search index definitions
- * Uses B-tree with text_pattern_ops for better prefix matching performance
- * This works without pg_trgm extension and is faster for LIKE 'prefix%' queries
- */
 const getSearchIndexDefinitions = () => [
-  // inventory_items search indexes
-  // text_pattern_ops is optimized for pattern matching (LIKE queries)
+
   {
     name: "idx_inventory_item_name_search",
     table: "inventory_items",
@@ -117,7 +94,6 @@ const getSearchIndexDefinitions = () => [
     using: 'btree("description" text_pattern_ops)',
   },
 
-  // invoices search indexes
   {
     name: "idx_invoices_invoice_number_search",
     table: "invoices",
@@ -125,7 +101,6 @@ const getSearchIndexDefinitions = () => [
     using: 'btree("invoice_number" text_pattern_ops)',
   },
 
-  // customers search indexes
   {
     name: "idx_customers_full_name_search",
     table: "customers",
@@ -140,17 +115,11 @@ const getSearchIndexDefinitions = () => [
   },
 ];
 
-/**
- * Creates all indexes for a specific tenant schema
- * @param {string} schemaName - The schema name
- * @param {object} transaction - Optional Sequelize transaction
- * @returns {Promise<void>}
- */
 export const createIndexesForSchema = async (
   schemaName,
   transaction = null,
 ) => {
-  // Validate schema name for security
+
   if (!/^[a-zA-Z0-9_]+$/.test(schemaName)) {
     throw new Error(`Invalid schema name: ${schemaName}`);
   }
@@ -161,19 +130,16 @@ export const createIndexesForSchema = async (
   const failedIndexes = [];
   const skippedTables = [];
 
-  // Set search_path to the schema
-  // Note: Don't use transaction for search_path as it's session-level
   await sequelize.query(`SET search_path TO "${schemaName}", public`);
 
   const queryOptions = transaction ? { transaction } : {};
 
-  // Helper function to check if table exists
   const tableExists = async (tableName) => {
     try {
       const [results] = await sequelize.query(
         `SELECT EXISTS (
-          SELECT FROM information_schema.tables 
-          WHERE table_schema = $1 
+          SELECT FROM information_schema.tables
+          WHERE table_schema = $1
           AND table_name = $2
         )`,
         {
@@ -194,7 +160,7 @@ export const createIndexesForSchema = async (
   };
 
   for (const idx of indexDefinitions) {
-    // Check if table exists before creating index
+
     const tableExistsResult = await tableExists(idx.table);
 
     if (!tableExistsResult) {
@@ -243,12 +209,10 @@ export const createIndexesForSchema = async (
     }
   }
 
-  // Reset search_path to public
-  // Note: Always reset, as search_path is session-level, not transaction-level
   try {
     await sequelize.query("SET search_path TO public");
   } catch (resetError) {
-    // Ignore reset errors as they're not critical
+
     logger.debug("Error resetting search_path (non-critical)", {
       component: "index-helper",
       error: resetError?.message,
@@ -289,13 +253,8 @@ export const createIndexesForSchema = async (
   };
 };
 
-/**
- * Creates search indexes (trigram) for a specific tenant schema
- * @param {string} schemaName - The schema name
- * @returns {Promise<object>}
- */
 export const createSearchIndexesForSchema = async (schemaName) => {
-  // Validate schema name for security
+
   if (!/^[a-zA-Z0-9_]+$/.test(schemaName)) {
     throw new Error(`Invalid schema name: ${schemaName}`);
   }
@@ -306,16 +265,14 @@ export const createSearchIndexesForSchema = async (schemaName) => {
   const failedIndexes = [];
   const skippedTables = [];
 
-  // Set search_path to the schema for index creation
   await sequelize.query(`SET search_path TO "${schemaName}", public`);
 
-  // Helper function to check if table exists
   const tableExists = async (tableName) => {
     try {
       const [results] = await sequelize.query(
         `SELECT EXISTS (
-          SELECT FROM information_schema.tables 
-          WHERE table_schema = $1 
+          SELECT FROM information_schema.tables
+          WHERE table_schema = $1
           AND table_name = $2
         )`,
         {
@@ -335,7 +292,7 @@ export const createSearchIndexesForSchema = async (schemaName) => {
   };
 
   for (const idx of indexDefinitions) {
-    // Check if table exists before creating index
+
     const tableExistsResult = await tableExists(idx.table);
 
     if (!tableExistsResult) {
@@ -349,8 +306,6 @@ export const createSearchIndexesForSchema = async (schemaName) => {
       continue;
     }
 
-    // Check if column exists and has data (not all NULL)
-    // Trigram indexes don't work well on columns that are all NULL
     try {
       const [columnCheck] = await sequelize.query(
         `SELECT COUNT(*)::int as total, COUNT("${idx.column}")::int as non_null_count
@@ -361,7 +316,6 @@ export const createSearchIndexesForSchema = async (schemaName) => {
         },
       );
 
-      // Skip if column is all NULL (can't create useful index)
       if (
         columnCheck &&
         parseInt(columnCheck.non_null_count || 0) === 0 &&
@@ -378,7 +332,7 @@ export const createSearchIndexesForSchema = async (schemaName) => {
         continue;
       }
     } catch (checkError) {
-      // If check fails, try to create index anyway
+
       logger.debug(
         "Could not check column values, proceeding with index creation",
         {
@@ -392,7 +346,7 @@ export const createSearchIndexesForSchema = async (schemaName) => {
     }
 
     const qual = `"${schemaName}"."${idx.table}"`;
-    // Using clause is already properly formatted with quoted column names
+
     const sql = `CREATE INDEX IF NOT EXISTS "${idx.name}" ON ${qual} USING ${idx.using};`;
 
     try {
@@ -404,7 +358,7 @@ export const createSearchIndexesForSchema = async (schemaName) => {
         index: idx.name,
       });
     } catch (e) {
-      // Check for specific error types
+
       const errorMsg = e?.message || String(e);
 
       if (
@@ -422,7 +376,7 @@ export const createSearchIndexesForSchema = async (schemaName) => {
         errorMsg.includes("operator class") ||
         errorMsg.includes("does not exist")
       ) {
-        // Column type might not support trigram indexes or extension not available
+
         failedIndexes.push({
           name: idx.name,
           error: `Column/extension issue: ${errorMsg}`,
@@ -446,7 +400,6 @@ export const createSearchIndexesForSchema = async (schemaName) => {
     }
   }
 
-  // Reset search_path to public
   try {
     await sequelize.query("SET search_path TO public");
   } catch (resetError) {

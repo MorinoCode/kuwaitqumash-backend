@@ -1,15 +1,6 @@
 import { DataTypes } from 'sequelize';
 import sequelize from '../../config/database.js';
 
-/**
- * Inventory item for a fabric shop.
- * Stock is tracked in meters (and rolls/pieces), never in weight or karat.
- *   unit = 'meter' | 'roll' | 'piece'
- *   length_m       -> sellable length currently in stock (meters)
- *   roll_length_m  -> length of one roll (meters), optional
- *   cost_per_meter -> purchase cost per meter
- *   price_per_meter -> retail price per meter
- */
 const InventoryItem = sequelize.define('InventoryItem', {
   id: {
     type: DataTypes.INTEGER,
@@ -40,11 +31,11 @@ const InventoryItem = sequelize.define('InventoryItem', {
   },
   composition: {
     type: DataTypes.STRING,
-    allowNull: true // e.g. "100% Cotton", "70% Polyester 30% Viscose"
+    allowNull: true
   },
   pattern: {
     type: DataTypes.STRING,
-    allowNull: true // e.g. "Floral", "Plain", "Striped"
+    allowNull: true
   },
   color: {
     type: DataTypes.STRING,

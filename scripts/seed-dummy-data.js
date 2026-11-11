@@ -1,12 +1,3 @@
-/**
- * Dummy Data Seeder Script (KuwaitQumash - fabric platform)
- *
- * این اسکریپت داده‌ی نمونه‌ی کامل برای تست اپلیکیشن پارچه ایجاد می‌کند:
- * انبار متری، فروش متری، فاکتور، پرداخت و تنظیمات واتساپ.
- *
- * استفاده: node scripts/seed-dummy-data.js
- */
-
 import { faker } from '@faker-js/faker';
 import bcrypt from 'bcrypt';
 import sequelize from '../src/config/database.js';
@@ -18,7 +9,6 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Import models
 import User from '../src/domains/auth/user.model.js';
 import Branch from '../src/domains/store/branch.model.js';
 import Customer from '../src/domains/customers/customer.model.js';
@@ -28,7 +18,6 @@ import InvoiceItem from '../src/domains/sales/invoice-item.model.js';
 import InvoicePayment from '../src/domains/sales/payment.model.js';
 import { generateUniqueBarcode } from '../src/utils/barcode.js';
 
-// Fabric vocabulary
 const FABRIC_TYPES = [
   'Cotton',
   'Silk',
@@ -105,7 +94,6 @@ const NATIONALITIES = [
   'Filipino'
 ];
 
-// Purchase cost per meter (KD) per fabric type
 const BASE_COST_PER_METER = {
   Cotton: 2.5,
   Silk: 9.5,
@@ -229,7 +217,7 @@ async function seedDummyData() {
       await createTenantSchema(tenant, {
         full_name: tenantInfo.owner_name,
         username: tenantInfo.username,
-        password: '123456' // hashed inside createTenantSchema
+        password: '123456'
       });
 
       logger.info('Created tenant', {
@@ -272,7 +260,6 @@ async function seedDummyData() {
         continue;
       }
 
-      // Branches
       const branches = [mainBranch];
       const branchNames = [
         'Salmiya Branch',
@@ -294,7 +281,6 @@ async function seedDummyData() {
         count: branches.length
       });
 
-      // Users
       const users = [owner];
       for (const branch of branches) {
         if (!branch.is_main) {
@@ -329,7 +315,6 @@ async function seedDummyData() {
         managers: branches.length - 1
       });
 
-      // Customers
       const customers = [];
       const customerCount = faker.number.int({ min: 30, max: 50 });
       for (let i = 0; i < customerCount; i++) {
@@ -363,7 +348,6 @@ async function seedDummyData() {
         count: customers.length
       });
 
-      // Inventory (fabric rolls / bolts, stock in meters)
       const inventoryItems = [];
       const itemCount = faker.number.int({ min: 100, max: 150 });
 
@@ -445,7 +429,6 @@ async function seedDummyData() {
         count: inventoryItems.length
       });
 
-      // Invoices (fabric sold by the meter)
       const invoices = [];
       const invoiceCount = faker.number.int({ min: 40, max: 60 });
       let availableItems = inventoryItems.filter(
@@ -590,7 +573,6 @@ async function seedDummyData() {
         count: invoices.length
       });
 
-      // WhatsApp config
       await WhatsappConfig.create({
         tenant_slug: tenant.slug,
         is_enabled: faker.datatype.boolean(0.5),
@@ -634,5 +616,4 @@ async function seedDummyData() {
   }
 }
 
-// Run the seed
 seedDummyData();

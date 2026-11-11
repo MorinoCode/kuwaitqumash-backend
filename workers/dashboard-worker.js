@@ -1,8 +1,3 @@
-/**
- * Dashboard Worker - Separate process for dashboard data aggregation
- * Runs nightly/hourly aggregations and caches data in Redis
- * Can be deployed separately on Google Cloud
- */
 import "../src/config/env.js";
 import sequelize from "../src/config/database.js";
 import { cacheSet, isRedisAvailable } from "../src/config/redis.js";
@@ -18,17 +13,13 @@ import Customer from "../src/domains/customers/customer.model.js";
 import WhatsappConfig from "../src/domains/platform/whatsapp.config.model.js";
 import { Op, Sequelize } from "sequelize";
 
-
 const CACHE_TTL = {
-  TODAY: 3600, // 1 hour for today's data
-  WEEKLY: 86400, // 24 hours for weekly data
-  MONTHLY: 86400 * 7, // 7 days for monthly data
-  LOW_STOCK: 3600, // 1 hour for low stock alerts
+  TODAY: 3600,
+  WEEKLY: 86400,
+  MONTHLY: 86400 * 7,
+  LOW_STOCK: 3600,
 };
 
-/**
- * Calculate profit using cost_per_meter_snapshot from invoice items
- */
 const calculateProfit = (items) => {
   let totalCost = 0;
   items.forEach((item) => {
@@ -39,14 +30,6 @@ const calculateProfit = (items) => {
   return totalCost;
 };
 
-/**
- * Combine category + fabric_type for analytics (e.g., "انگشتر ۱۸ عیار")
- */
-
-
-/**
- * Aggregate Owner Dashboard Data
- */
 const aggregateOwnerDashboard = async (tenant) => {
   try {
     const schema = tenant.db_schema;
@@ -59,7 +42,6 @@ const aggregateOwnerDashboard = async (tenant) => {
     const monthStart = new Date();
     monthStart.setDate(monthStart.getDate() - 30);
 
-    // Today's KPIs
     const invoicesToday = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: todayStart },
@@ -86,7 +68,6 @@ const aggregateOwnerDashboard = async (tenant) => {
     const avgSaleValue =
       invoicesToday.length > 0 ? totalSalesToday / invoicesToday.length : 0;
 
-    // Total Inventory Value
     const inventoryItems = await InventoryItem.schema(schema).findAll({
       where: { status: "In Stock" },
       attributes: ["length_m", "cost_per_meter", "quantity"],
@@ -101,17 +82,14 @@ const aggregateOwnerDashboard = async (tenant) => {
       totalInventoryValue += value;
     });
 
-    // Active Branches Count
     const activeBranches = await Branch.schema(schema).count({
       where: { is_active: true },
     });
 
-    // WhatsApp Status
     const whatsappConfig = await WhatsappConfig.findOne({
       where: { tenant_slug: tenant.slug },
     });
 
-    // Sales Trend (7 days)
     const salesTrend7Days = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: weekStart },
@@ -126,7 +104,6 @@ const aggregateOwnerDashboard = async (tenant) => {
       raw: true,
     });
 
-    // Sales Trend (30 days)
     const salesTrend30Days = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: monthStart },
@@ -141,7 +118,6 @@ const aggregateOwnerDashboard = async (tenant) => {
       raw: true,
     });
 
-    // Sales by Branch (only if >1 branch)
     const branchSales = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: todayStart },
@@ -159,10 +135,9 @@ const aggregateOwnerDashboard = async (tenant) => {
       nest: true,
     });
 
-    // Sales by fabric type + inventory category
     const categoryFabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
         ii.pattern,
         it.fabric_type,
@@ -181,7 +156,6 @@ const aggregateOwnerDashboard = async (tenant) => {
       },
     );
 
-    // Calculate profit per fabric type
     const categoryFabricWithProfit = await Promise.all(
       categoryFabricSales.map(async (item) => {
         const items = await InvoiceItem.schema(schema).findAll({
@@ -217,10 +191,9 @@ const aggregateOwnerDashboard = async (tenant) => {
       }),
     );
 
-    // Sales by fabric type
     const fabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -236,10 +209,9 @@ const aggregateOwnerDashboard = async (tenant) => {
       },
     );
 
-    // Top 5 Selling Items (by Revenue)
     const topItemsRevenue = await sequelize.query(
       `
-      SELECT 
+      SELECT
         ii.id,
         ii.item_name AS name,
         ii.pattern,
@@ -260,7 +232,6 @@ const aggregateOwnerDashboard = async (tenant) => {
       },
     );
 
-    // Calculate profit for top items
     const topItemsWithProfit = await Promise.all(
       topItemsRevenue.map(async (item) => {
         const items = await InvoiceItem.schema(schema).findAll({
@@ -291,7 +262,6 @@ const aggregateOwnerDashboard = async (tenant) => {
       }),
     );
 
-    // Top 5 Customers (by value)
     const topCustomers = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: todayStart },
@@ -315,7 +285,6 @@ const aggregateOwnerDashboard = async (tenant) => {
       nest: true,
     });
 
-    // Low Stock Items
     const lowStockItems = await InventoryItem.schema(schema).findAll({
       where: {
         status: "In Stock",
@@ -378,7 +347,6 @@ const aggregateOwnerDashboard = async (tenant) => {
       last_updated: new Date().toISOString(),
     };
 
-    // Cache in Redis
     const cacheKey = `dashboard:owner:${tenant.slug}`;
     await cacheSet(cacheKey, dashboardData, CACHE_TTL.TODAY);
 
@@ -400,9 +368,6 @@ const aggregateOwnerDashboard = async (tenant) => {
   }
 };
 
-/**
- * Aggregate Manager Dashboard Data
- */
 const aggregateManagerDashboard = async (tenant, branchId) => {
   try {
     const schema = tenant.db_schema;
@@ -415,7 +380,6 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
     const monthStart = new Date();
     monthStart.setDate(monthStart.getDate() - 30);
 
-    // Today's KPIs
     const invoicesToday = await Invoice.schema(schema).findAll({
       where: {
         branch_id: branchId,
@@ -443,7 +407,6 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
     const avgSaleValue =
       invoicesToday.length > 0 ? branchSalesToday / invoicesToday.length : 0;
 
-    // Sales Trend (7/30 days)
     const salesTrend7Days = await Invoice.schema(schema).findAll({
       where: {
         branch_id: branchId,
@@ -474,10 +437,9 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       raw: true,
     });
 
-    // Sales by fabric type + inventory category
     const categoryFabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
         ii.pattern,
         it.fabric_type,
@@ -496,10 +458,9 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       },
     );
 
-    // Sales by fabric type
     const fabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -515,7 +476,6 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       },
     );
 
-    // Staff Performance (Today/Week/Month)
     const staffPerformanceToday = await Invoice.schema(schema).findAll({
       where: {
         branch_id: branchId,
@@ -588,10 +548,9 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       nest: true,
     });
 
-    // Top 5 Items (by Revenue)
     const topItemsRevenue = await sequelize.query(
       `
-      SELECT 
+      SELECT
         ii.id,
         ii.item_name AS name,
         ii.pattern,
@@ -612,7 +571,6 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       },
     );
 
-    // Top 5 Customers
     const topCustomers = await Invoice.schema(schema).findAll({
       where: {
         branch_id: branchId,
@@ -637,7 +595,6 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       nest: true,
     });
 
-    // Low Stock Items
     const lowStockItems = await InventoryItem.schema(schema).findAll({
       where: {
         branch_id: branchId,
@@ -722,7 +679,6 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       last_updated: new Date().toISOString(),
     };
 
-    // Cache in Redis
     const cacheKey = `dashboard:manager:${tenant.slug}:${branchId}`;
     await cacheSet(cacheKey, dashboardData, CACHE_TTL.TODAY);
 
@@ -746,9 +702,6 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
   }
 };
 
-/**
- * Aggregate Salesman Dashboard Data
- */
 const aggregateSalesmanDashboard = async (tenant, userId) => {
   try {
     const schema = tenant.db_schema;
@@ -758,7 +711,6 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - 7);
 
-    // Today's KPIs
     const invoicesToday = await Invoice.schema(schema).findAll({
       where: {
         created_by: userId,
@@ -778,7 +730,6 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
     const avgSaleValue =
       invoicesToday.length > 0 ? mySalesToday / invoicesToday.length : 0;
 
-    // Sales Trend (7 days)
     const salesTrend7Days = await Invoice.schema(schema).findAll({
       where: {
         created_by: userId,
@@ -794,10 +745,9 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
       raw: true,
     });
 
-    // Sales by fabric type + inventory category
     const categoryFabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
         ii.pattern,
         it.fabric_type,
@@ -816,10 +766,9 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
       },
     );
 
-    // Sales by fabric type
     const fabricSales = await sequelize.query(
       `
-      SELECT 
+      SELECT
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -835,10 +784,9 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
       },
     );
 
-    // Top 5 Items I Sold
     const topItems = await sequelize.query(
       `
-      SELECT 
+      SELECT
         ii.id,
         ii.item_name AS name,
         ii.pattern,
@@ -892,7 +840,6 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
       last_updated: new Date().toISOString(),
     };
 
-    // Cache in Redis
     const cacheKey = `dashboard:salesman:${tenant.slug}:${userId}`;
     await cacheSet(cacheKey, dashboardData, CACHE_TTL.TODAY);
 
@@ -916,9 +863,6 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
   }
 };
 
-/**
- * Process all tenants
- */
 const processAllTenants = async () => {
   try {
     const tenants = await Tenant.findAll({
@@ -932,25 +876,21 @@ const processAllTenants = async () => {
 
     for (const tenant of tenants) {
       try {
-        // Aggregate owner dashboard
+
         await aggregateOwnerDashboard(tenant);
 
-        // Get all branches for this tenant
         const branches = await Branch.schema(tenant.db_schema).findAll({
           where: { is_active: true },
         });
 
-        // Aggregate manager dashboards
         for (const branch of branches) {
           await aggregateManagerDashboard(tenant, branch.id);
         }
 
-        // Get all salesmen for this tenant
         const salesmen = await User.schema(tenant.db_schema).findAll({
           where: { role: "sales_man" },
         });
 
-        // Aggregate salesman dashboards
         for (const salesman of salesmen) {
           await aggregateSalesmanDashboard(tenant, salesman.id);
         }
@@ -960,7 +900,7 @@ const processAllTenants = async () => {
           tenant: tenant.slug,
           error: error?.message,
         });
-        // Continue with next tenant
+
       }
     }
 
@@ -974,18 +914,13 @@ const processAllTenants = async () => {
   }
 };
 
-/**
- * Main worker function
- */
 const main = async () => {
   try {
     logger.info("Dashboard Worker starting", { component: "worker" });
 
-    // Test database connection
     await sequelize.authenticate();
     logger.info("Database connected", { component: "worker" });
 
-    // Check Redis availability
     if (isRedisAvailable()) {
       logger.info("Redis available, caching enabled", { component: "worker" });
     } else {
@@ -994,16 +929,13 @@ const main = async () => {
       });
     }
 
-    // Run immediately on startup
     await processAllTenants();
 
-    // Schedule nightly aggregation (runs at 2 AM)
     cron.schedule("0 2 * * *", async () => {
       logger.info("Running nightly aggregation", { component: "worker" });
       await processAllTenants();
     });
 
-    // Schedule hourly aggregation for today's data (runs every hour)
     cron.schedule("0 * * * *", async () => {
       logger.info("Running hourly aggregation", { component: "worker" });
       await processAllTenants();
@@ -1021,7 +953,6 @@ const main = async () => {
   }
 };
 
-// Handle graceful shutdown
 process.on("SIGTERM", async () => {
   logger.info("SIGTERM received, shutting down gracefully", {
     component: "worker",
@@ -1038,5 +969,4 @@ process.on("SIGINT", async () => {
   process.exit(0);
 });
 
-// Start worker
 main();

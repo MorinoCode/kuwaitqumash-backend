@@ -10,7 +10,6 @@ const generateRandomString = (length) => {
   return result;
 };
 
-/** Fabric type -> 2 letter barcode prefix (works for custom/Arabic names too). */
 function fabricToCode(fabric) {
   if (!fabric || typeof fabric !== "string") return "FB";
   const code = toBarcodeSafeCode(fabric.trim(), 2);
@@ -25,7 +24,7 @@ export const generateUniqueBarcode = async (Model, fabricType, design, variant) 
   const fabricCode = fabricToCode(fabricType);
   const designCode =
     design && String(design).trim() ? toBarcodeSafeCode(design, 3) : "GEN";
-  // Optional variant code (e.g. width in cm) kept as two digits
+
   let variantCode = "00";
   if (variant != null && String(variant).trim() !== "") {
     const v = normalizeToLatinDigits(String(variant))
@@ -38,10 +37,9 @@ export const generateUniqueBarcode = async (Model, fabricType, design, variant) 
     const randomPart = generateRandomString(8);
     barcode = `${fabricCode}-${designCode}-${variantCode}-${randomPart}`;
 
-    // Optimize: Use findOne with only barcode field (uses index) and limit 1
     const existing = await Model.findOne({
       where: { barcode },
-      attributes: ["id"], // Only fetch id field for faster query
+      attributes: ["id"],
       limit: 1,
     });
 

@@ -1,10 +1,6 @@
 import { DataTypes } from 'sequelize';
 import sequelize from '../../config/database.js';
 
-/**
- * Invoice line for fabric: meters x price_per_meter minus discount.
- * cost_per_meter is a snapshot of the purchase cost for profit reporting.
- */
 const InvoiceItem = sequelize.define('InvoiceItem', {
   id: {
     type: DataTypes.INTEGER,

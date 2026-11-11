@@ -14,7 +14,6 @@ router.use(protect);
 
 router.get('/', inventoryController.getInventory);
 
-// Custom options routes - MUST be before /:id routes to avoid route conflict
 router.get('/custom-options', inventoryController.getCustomOptions);
 router.post('/custom-options',
   restrictTo('store_owner', 'branch_manager', 'sales_man'),
@@ -24,13 +23,13 @@ router.post('/custom-options',
 router.post('/',
   restrictTo('store_owner', 'branch_manager', 'sales_man'),
   upload.array('images', 5),
-  // Validate after multer processes FormData
+
   (req, res, next) => {
-    // Convert FormData strings to proper types for validation
+
     const body = { ...req.body };
-    // Convert numeric fields (only fields that are defined as number in schema)
+
     if (body.branch_id) body.branch_id = body.branch_id ? parseInt(body.branch_id, 10) : null;
-    // Convert empty strings to null
+
     if (body.fabric_type === '') body.fabric_type = null;
     if (body.barcode === '') body.barcode = null;
     if (body.description === '') body.description = null;
@@ -52,13 +51,13 @@ router.get('/:id/check-deletable', inventoryController.checkItemDeletable);
 router.put('/:id',
   restrictTo('store_owner', 'branch_manager', 'sales_man'),
   upload.array('images', 5),
-  // Validate after multer processes FormData
+
   (req, res, next) => {
-    // Convert FormData strings to proper types for validation
+
     const body = { ...req.body };
-    // Convert numeric fields (only fields that are defined as number in schema)
+
     if (body.branch_id) body.branch_id = body.branch_id ? parseInt(body.branch_id, 10) : null;
-    // Convert empty strings to null
+
     if (body.fabric_type === '') body.fabric_type = null;
     if (body.barcode === '') body.barcode = null;
     if (body.description === '') body.description = null;
@@ -77,8 +76,8 @@ router.post('/:id/delete-image',
   inventoryController.deleteItemImage
 );
 
-router.delete('/:id', 
-  restrictTo('store_owner', 'branch_manager', 'sales_man'), 
+router.delete('/:id',
+  restrictTo('store_owner', 'branch_manager', 'sales_man'),
   inventoryController.deleteItem
 );
 

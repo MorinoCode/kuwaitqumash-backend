@@ -13,10 +13,6 @@ import Branch from "../store/branch.model.js";
 import logger from "../../utils/logger.js";
 import { applyRefundToStock } from "../../utils/stock.js";
 
-/**
- * Get invoice with items, including refunded quantities per item
- * Accepts numeric ID or invoice_number (e.g. INV-2024-001)
- */
 export const getInvoiceForRefund = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
@@ -143,9 +139,6 @@ export const getInvoiceForRefund = async (req, res) => {
   }
 };
 
-/**
- * Create a refund - update inventory, create refund records
- */
 export const createRefund = async (req, res) => {
   const schema = req.tenant.db_schema;
   const { invoice_id, items, payments, notes } = req.body;
@@ -235,14 +228,7 @@ export const createRefund = async (req, res) => {
 
     const refundNumber = `REF-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // To prevent collision on Credit Note Number in high concurrency, we add retry/unique logic
-    // OR we just append a random string if it's not strictly sequence-based.
-    // Given accounting usually requires sequence, we lock the refunds table or use a dedicated sequence.
-    // However, since we locked the `Invoice` above, it only prevents collision for the SAME invoice.
-    // For different invoices, they can still collide here!
-    // A better approach without creating a new sequence object is to use a tighter lock or retry loop.
-    // PostgreSQL advisory lock is ideal here.
-    const lockKey = 1000; // arbitrary key for CN generation
+    const lockKey = 1000;
     await sequelize.query('SELECT pg_advisory_xact_lock(:key)', { replacements: { key: lockKey }, transaction: t });
 
     const year = new Date().getFullYear();
@@ -354,8 +340,7 @@ export const createRefund = async (req, res) => {
       error: error?.message,
       stack: error?.stack,
     });
-    
-    // Check if message is one of our access control errors
+
     if (error?.message === "Invoice not found") {
       return res.status(404).json({ message: "Invoice not found" });
     }
@@ -369,9 +354,6 @@ export const createRefund = async (req, res) => {
   }
 };
 
-/**
- * Get Credit Note PDF for a refund
- */
 export const getCreditNotePDF = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
@@ -451,9 +433,6 @@ export const getCreditNotePDF = async (req, res) => {
   }
 };
 
-/**
- * Get refunds list with filters
- */
 export const getRefunds = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
@@ -467,7 +446,6 @@ export const getRefunds = async (req, res) => {
       where.branch_id = branch_id;
     }
 
-    // Date range filter
     if (start_date || end_date) {
       where.createdAt = {};
       if (start_date) {
@@ -482,7 +460,6 @@ export const getRefunds = async (req, res) => {
       }
     }
 
-    // Search filter: credit_note_number, refund_number, or invoice_number
     if (search && String(search).trim()) {
       const searchStr = `%${String(search).trim()}%`;
       where[Op.or] = [

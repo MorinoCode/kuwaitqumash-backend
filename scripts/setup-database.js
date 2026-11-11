@@ -1,19 +1,9 @@
-/**
- * Database Setup Script
- * 
- * This script creates the database and all necessary schemas/tables
- * Run this script if you lose your database and need to recreate it
- * 
- * Usage: node scripts/setup-database.js
- */
-
 import { Sequelize } from 'sequelize';
 import dotenv from 'dotenv';
 import logger from '../src/utils/logger.js';
 
 dotenv.config();
 
-// Import models
 import Tenant from '../src/domains/platform/tenant.model.js';
 import WhatsappConfig from '../src/domains/platform/whatsapp.config.model.js';
 import User from '../src/domains/auth/user.model.js';
@@ -28,7 +18,6 @@ import RefundItem from '../src/domains/sales/refund-item.model.js';
 import RefundPayment from '../src/domains/sales/refund-payment.model.js';
 import CustomInventoryOption from '../src/domains/inventory/custom-option.model.js';
 
-// Setup relationships (same as in app.js)
 User.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
 Branch.hasMany(User, { foreignKey: 'branch_id' });
 
@@ -46,7 +35,6 @@ InvoiceItem.belongsTo(Invoice, { foreignKey: 'invoice_id' });
 
 Invoice.hasMany(InvoicePayment, { foreignKey: 'invoice_id', as: 'payments' });
 InvoicePayment.belongsTo(Invoice, { foreignKey: 'invoice_id' });
-
 
 InventoryItem.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
 Branch.hasMany(InventoryItem, { foreignKey: 'branch_id' });
@@ -163,13 +151,12 @@ const setupDatabase = async () => {
       error: error?.message,
       stack: error?.stack
     });
-    
+
     if (adminConnection) await adminConnection.close();
     if (appConnection) await appConnection.close();
-    
+
     process.exit(1);
   }
 };
 
-// Run the setup
 setupDatabase();

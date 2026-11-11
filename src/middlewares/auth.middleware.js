@@ -4,7 +4,7 @@ import logger from '../utils/logger.js';
 
 export const protect = async (req, res, next) => {
   try {
-    // Critical Check: Tenant must be resolved BEFORE auth
+
     if (!req.tenant) {
         return res.status(500).json({ message: 'System Error: Tenant context not set before authentication.' });
     }
@@ -23,7 +23,6 @@ export const protect = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
 
-    // User.findByPk will now run on the correct schema because resolveTenant ran first
    const user = await User.schema(req.tenant.db_schema).findByPk(decoded.id, {
       attributes: { exclude: ['password'] }
     });
@@ -46,10 +45,10 @@ export const protect = async (req, res, next) => {
 
 export const restrictTo = (...allowedRoles) => {
   return (req, res, next) => {
-    // req.user.role contains the string role name (e.g., 'store_owner')
+
     if (!allowedRoles.includes(req.user.role)) {
-      return res.status(403).json({ 
-        message: 'Access denied. You do not have permission to perform this action.' 
+      return res.status(403).json({
+        message: 'Access denied. You do not have permission to perform this action.'
       });
     }
     next();

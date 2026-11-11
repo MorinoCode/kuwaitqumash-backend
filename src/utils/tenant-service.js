@@ -4,14 +4,13 @@ import logger from './logger.js';
 import User from '../domains/auth/user.model.js';
 import Role from '../domains/auth/role.model.js';
 import Branch from '../domains/store/branch.model.js';
-import InventoryItem from '../domains/inventory/item.model.js'; // Check path
-import Customer from '../domains/customers/customer.model.js'; // Check path
+import InventoryItem from '../domains/inventory/item.model.js';
+import Customer from '../domains/customers/customer.model.js';
 import Invoice from '../domains/sales/invoice.model.js';
 
 export const createTenantSchema = async (tenantData, adminUserData) => {
   const schemaName = tenantData.db_schema;
-  
-  // Validate Schema Name Security
+
   if (!/^[a-zA-Z0-9_]+$/.test(schemaName)) {
       throw new Error("Invalid schema name. Only alphanumeric and underscores allowed.");
   }
@@ -19,27 +18,18 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
   const t = await sequelize.transaction();
 
   try {
-    // 1. Create Schema
+
     await sequelize.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`, { transaction: t });
-    
-    // 2. Set Path to New Schema for Table Creation
+
     await sequelize.query(`SET search_path TO "${schemaName}"`, { transaction: t });
 
-    // 3. Sync Tables (Order matters for Foreign Keys)
-    // Note: In production, using migrations is better than sync(), but sync is okay for MVP.
-    
-    await Branch.sync({ transaction: t }); // Branch first (User depends on it)
+    await Branch.sync({ transaction: t });
     await Role.sync({ transaction: t });
     await User.sync({ transaction: t });
     await Customer.sync({ transaction: t });
     await InventoryItem.sync({ transaction: t });
     await Invoice.sync({ transaction: t });
-    // await InvoiceItem.sync({ transaction: t }); // Uncomment when model exists
-    // await InvoicePayment.sync({ transaction: t }); // Uncomment when model exists
 
-    // 4. Seed Initial Data
-    
-    // Roles
     await Role.bulkCreate([
         {
             name: 'store_owner',
@@ -58,7 +48,6 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
         }
     ], { transaction: t });
 
-    // Main Branch
     const mainBranch = await Branch.create({
       name: 'Main Branch',
       location: 'Headquarters',
@@ -66,7 +55,6 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
       is_main: true
     }, { transaction: t });
 
-    // Admin User
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(adminUserData.password, salt);
 
@@ -74,7 +62,7 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
       full_name: adminUserData.full_name,
       username: adminUserData.username,
       password: hashedPassword,
-      role: 'store_owner', // Must match the name in Role table
+      role: 'store_owner',
       branch_id: mainBranch.id,
       is_active: true
     }, { transaction: t });
@@ -90,9 +78,9 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
     } catch (cleanupError) {
         logger.error('Schema cleanup after error failed', { component: 'tenant-service', error: cleanupError?.message });
     }
-    throw error; 
+    throw error;
   } finally {
-    // Always reset path to public
+
     await sequelize.query(`SET search_path TO public`);
   }
 };
