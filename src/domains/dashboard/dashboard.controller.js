@@ -703,7 +703,7 @@ export const getManagerDashboard = async (req, res) => {
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
         INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
         WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-        GROUP BY it.fabric_type, it.color, ii.fabric_type
+        GROUP BY ii.id, ii.item_name, it.fabric_type, it.color, ii.fabric_type
         ORDER BY revenue DESC
         LIMIT 5
       `,
@@ -979,7 +979,7 @@ export const getSalesmanDashboard = async (req, res) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.fabric_type, it.color, ii.fabric_type
+      GROUP BY ii.id, ii.item_name, it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
