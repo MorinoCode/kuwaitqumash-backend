@@ -1122,7 +1122,7 @@ export const getDashboardAnalytics = async (req, res) => {
           (await Invoice.schema(schema).sum("total_amount", {
             where: combinedFilter,
           })) || 0;
-        const totalWeightSold =
+        const totalMetersSold =
           (await Invoice.schema(schema).sum("total_meters", {
             where: combinedFilter,
           })) || 0;
@@ -1170,7 +1170,7 @@ export const getDashboardAnalytics = async (req, res) => {
             attributes: [
               [groupBy, "date"],
               [Sequelize.fn("SUM", Sequelize.col("total_amount")), "revenue"],
-              [Sequelize.fn("SUM", Sequelize.col("total_meters")), "weight"],
+              [Sequelize.fn("SUM", Sequelize.col("total_meters")), "meters"],
               [Sequelize.fn("COUNT", Sequelize.col("id")), "quantity"],
             ],
             where: combinedFilter,
@@ -1185,7 +1185,7 @@ export const getDashboardAnalytics = async (req, res) => {
             SELECT
               DATE_TRUNC('${truncType}', created_at) AS date,
               SUM(total_amount) AS revenue,
-              SUM(total_meters) AS weight,
+              SUM(total_meters) AS meters,
               COUNT(id) AS quantity
             FROM "${schema}".invoices
             WHERE created_at BETWEEN :start AND :end
@@ -1230,7 +1230,7 @@ export const getDashboardAnalytics = async (req, res) => {
               attributes: ["cost_per_meter"],
             },
           ],
-          attributes: ["total_price", "weight", "invoice_id"],
+          attributes: ["total_price", "meters", "invoice_id"],
         });
 
         const itemsByDate = {};
@@ -1307,7 +1307,7 @@ export const getDashboardAnalytics = async (req, res) => {
             date: period.date,
             revenue: parseFloat(period.revenue) || 0,
             profit: (parseFloat(period.revenue) || 0) - periodCost,
-            weight: parseFloat(period.meters ?? period.weight) || 0,
+            meters: parseFloat(period.meters ?? period.meters) || 0,
             quantity: parseInt(period.quantity) || 0,
           };
         });
@@ -1488,7 +1488,7 @@ export const getDashboardAnalytics = async (req, res) => {
                 attributes: ["cost_per_meter"],
               },
             ],
-            attributes: ["total_price", "weight", "invoice_id"],
+            attributes: ["total_price", "meters", "invoice_id"],
           }),
         ]);
 
@@ -1529,7 +1529,7 @@ export const getDashboardAnalytics = async (req, res) => {
           kpi: {
             revenue: totalRevenue,
             profit: grossProfit,
-            meters_sold: totalWeightSold,
+            meters_sold: totalMetersSold,
             transactions: totalTransactions,
             quantity: totalQuantity,
           },
@@ -1817,7 +1817,7 @@ export const getTopItems = async (req, res) => {
           attributes: ["id", "cost_per_meter", "fabric_type"],
         },
       ],
-      attributes: ["total_price", "weight", "inventory_item_id"],
+      attributes: ["total_price", "meters", "inventory_item_id"],
     });
 
     const detailsByItemId = {};
@@ -1860,7 +1860,7 @@ export const getTopItems = async (req, res) => {
         revenue: parseFloat(item.revenue) || 0,
         profit: (parseFloat(item.revenue) || 0) - cost,
         quantity: parseInt(item.quantity) || 0,
-        weight: parseFloat(item.meters) || 0,
+        meters: parseFloat(item.meters) || 0,
       };
     });
 
