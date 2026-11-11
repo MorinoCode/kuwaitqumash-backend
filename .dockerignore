@@ -1,0 +1,56 @@
+# Dependencies (keep package-lock.json so npm ci works)
+node_modules
+npm-debug.log
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+*.md
+DEPLOYMENT.md
+DEPLOY_GUIDE_SIMPLE.md
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Testing
+coverage
+test
+*.test.js
+*.spec.js
+
+# Development files
+workers
+# scripts - Keep scripts folder for Cloud Run Jobs (cleanup-whatsapp-job.js)
+nodemon.json
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# WhatsApp sessions (will be created at runtime)
+whatsapp_sessions
+
+# Temporary files
+tmp
+temp
+*.tmp

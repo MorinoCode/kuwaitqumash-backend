@@ -1,0 +1,5 @@
+{
+  "watch": ["src"],
+  "ignore": ["whatsapp_sessions", "public/uploads", "node_modules", "*.log", ".git"],
+  "ext": "js,json,mjs"
+}

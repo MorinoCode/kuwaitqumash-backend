@@ -1,0 +1,14 @@
+# Generated graphify artifacts
+graphify-out/
+node_modules/
+coverage/
+
+# Runtime state, not source: WhatsApp session blobs contain live credentials
+whatsapp_sessions/
+*.session
+creds.json
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
