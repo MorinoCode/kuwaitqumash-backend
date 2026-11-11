@@ -214,23 +214,16 @@ export const getOwnerDashboard = async (req, res) => {
       nest: true,
     });
 
-    // Sales by Category + Karat (combined)
-    // For Watch and Diamond, don't include karat in the name
-    const categoryKaratSales = await sequelize.query(
+    // Sales by fabric type + color
+    const categoryFabricSales = await sequelize.query(
       `
       SELECT 
-        CASE 
-          WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN ii.fabric_type
-          ELSE CONCAT(ii.fabric_type, ' ', it.fabric_type, 'K')
-        END AS name,
+        CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
         ii.fabric_type,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         SUM(
-          CASE 
-            WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN COALESCE(ii.cost_per_meter, 0)
-            ELSE (COALESCE(it.cost_per_meter_snapshot, 0) * (COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)))
-          END
+          COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)
         ) AS cost,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
@@ -239,7 +232,7 @@ export const getOwnerDashboard = async (req, res) => {
       WHERE inv.created_at >= :dateStart 
         AND inv.created_at <= :dateEnd 
         AND inv.status = 'Paid'
-      GROUP BY ii.fabric_type, it.fabric_type, ii.fabric_type
+      GROUP BY it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
     `,
       {
@@ -248,17 +241,16 @@ export const getOwnerDashboard = async (req, res) => {
       },
     );
 
-    const categoryKaratWithProfit = categoryKaratSales.map((item) => ({
+    const categoryFabricWithProfit = categoryFabricSales.map((item) => ({
       name: item.name,
-      category: item.category,
       fabric_type: item.fabric_type || null,
       revenue: parseFloat(item.revenue || 0),
       profit: parseFloat(item.revenue || 0) - parseFloat(item.cost || 0),
       quantity: parseInt(item.quantity || 0),
     }));
 
-    // Sales by Karat (only for Gold, Silver, Platinum - exclude Watch and Diamond)
-    const karatSales = await sequelize.query(
+    // Sales by fabric type
+    const fabricSales = await sequelize.query(
       `
       SELECT 
         it.fabric_type,
@@ -271,9 +263,8 @@ export const getOwnerDashboard = async (req, res) => {
         AND inv.created_at <= :dateEnd 
         AND inv.status = 'Paid'
         AND it.fabric_type IS NOT NULL
-        AND ii.fabric_type NOT IN ('Watch', 'Diamond')
       GROUP BY it.fabric_type
-      ORDER BY it.fabric_type DESC
+      ORDER BY it.fabric_type ASC
     `,
       {
         replacements: { dateStart: todayStart, dateEnd: todayEnd },
@@ -288,14 +279,10 @@ export const getOwnerDashboard = async (req, res) => {
         ii.id,
         ii.item_name AS name,
         ii.fabric_type,
-        ii.fabric_type,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         SUM(
-          CASE 
-            WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN COALESCE(ii.cost_per_meter, 0)
-            ELSE (COALESCE(it.cost_per_meter_snapshot, 0) * (COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)))
-          END
+          COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)
         ) AS cost,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
@@ -304,7 +291,7 @@ export const getOwnerDashboard = async (req, res) => {
       WHERE inv.created_at >= :dateStart 
         AND inv.created_at <= :dateEnd 
         AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.fabric_type, it.fabric_type, ii.fabric_type
+      GROUP BY it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -317,7 +304,6 @@ export const getOwnerDashboard = async (req, res) => {
     const topItemsWithProfit = topItemsRevenue.map((item) => ({
       id: item.id,
       name: item.name,
-      category: item.category,
       fabric_type: item.fabric_type || null,
       revenue: parseFloat(item.revenue || 0),
       profit: parseFloat(item.revenue || 0) - parseFloat(item.cost || 0),
@@ -391,8 +377,8 @@ export const getOwnerDashboard = async (req, res) => {
           name: b.branch?.name || "Unknown",
           revenue: parseFloat(b.total_sales || 0),
         })),
-        sales_by_category_karat: categoryKaratWithProfit,
-        sales_by_karat: karatSales.map((k) => ({
+        sales_by_category_karat: categoryFabricWithProfit,
+        sales_by_karat: fabricSales.map((k) => ({
           fabric_type: k.fabric_type || null,
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
@@ -518,8 +504,8 @@ export const getManagerDashboard = async (req, res) => {
       lowStockItems,
       salesTrend7Days,
       salesTrend30Days,
-      categoryKaratSales,
-      karatSales,
+      categoryFabricSales,
+      fabricSales,
       staffPerformanceToday,
       staffPerformanceWeek,
       staffPerformanceMonth,
@@ -581,14 +567,11 @@ export const getManagerDashboard = async (req, res) => {
         order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
         raw: true,
       }),
-      // 5. categoryKaratSales
+      // 5. categoryFabricSales
       sequelize.query(
         `
         SELECT 
-          CASE 
-            WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN ii.fabric_type
-            ELSE CONCAT(ii.fabric_type, ' ', it.fabric_type, 'K')
-          END AS name,
+          CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
           ii.fabric_type,
           it.fabric_type,
           SUM(it.total_price) AS revenue,
@@ -597,7 +580,7 @@ export const getManagerDashboard = async (req, res) => {
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
         INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
         WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-        GROUP BY ii.fabric_type, it.fabric_type, ii.fabric_type
+        GROUP BY it.fabric_type, it.color, ii.fabric_type
         ORDER BY revenue DESC
       `,
         {
@@ -605,7 +588,7 @@ export const getManagerDashboard = async (req, res) => {
           type: sequelize.QueryTypes.SELECT,
         },
       ),
-      // 6. karatSales
+      // 6. fabricSales
       sequelize.query(
         `
         SELECT 
@@ -619,9 +602,8 @@ export const getManagerDashboard = async (req, res) => {
           AND inv.created_at >= :todayStart 
           AND inv.status = 'Paid'
           AND it.fabric_type IS NOT NULL
-          AND ii.fabric_type NOT IN ('Watch', 'Diamond')
         GROUP BY it.fabric_type
-        ORDER BY it.fabric_type DESC
+        ORDER BY it.fabric_type ASC
       `,
         {
           replacements: { branchId, todayStart },
@@ -741,7 +723,7 @@ export const getManagerDashboard = async (req, res) => {
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
         INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
         WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-        GROUP BY ii.id, ii.item_name, ii.fabric_type, it.fabric_type
+        GROUP BY it.fabric_type, it.color, ii.fabric_type
         ORDER BY revenue DESC
         LIMIT 5
       `,
@@ -817,12 +799,12 @@ export const getManagerDashboard = async (req, res) => {
           date: d.date,
           revenue: parseFloat(d.revenue || 0),
         })),
-        salesByCategoryKarat: categoryKaratSales.map((c) => ({
+        salesByCategoryFabric: categoryFabricSales.map((c) => ({
           name: c.name,
           revenue: parseFloat(c.revenue || 0),
           quantity: parseInt(c.quantity || 0),
         })),
-        salesByKarat: karatSales.map((k) => ({
+        salesByFabric: fabricSales.map((k) => ({
           fabric_type: k.fabric_type || "-",
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
@@ -845,7 +827,6 @@ export const getManagerDashboard = async (req, res) => {
         top5ItemsRevenue: topItemsRevenue.map((i) => ({
           id: i.id,
           name: i.name,
-          category: i.category,
           fabric_type: i.fabric_type || null,
           revenue: parseFloat(i.revenue || 0),
           quantity: parseInt(i.quantity || 0),
@@ -968,14 +949,11 @@ export const getSalesmanDashboard = async (req, res) => {
       raw: true,
     });
 
-    // Sales by Category + Karat
-    const categoryKaratSales = await sequelize.query(
+    // Sales by fabric type + color
+    const categoryFabricSales = await sequelize.query(
       `
       SELECT 
-        CASE 
-          WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN ii.fabric_type
-          ELSE CONCAT(ii.fabric_type, ' ', it.fabric_type, 'K')
-        END AS name,
+        CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
         ii.fabric_type,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
@@ -984,7 +962,7 @@ export const getSalesmanDashboard = async (req, res) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.fabric_type, it.fabric_type, ii.fabric_type
+      GROUP BY it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
     `,
       {
@@ -993,8 +971,8 @@ export const getSalesmanDashboard = async (req, res) => {
       },
     );
 
-    // Sales by Karat (only for Gold, Silver, Platinum - exclude Watch and Diamond)
-    const karatSales = await sequelize.query(
+    // Sales by fabric type
+    const fabricSales = await sequelize.query(
       `
       SELECT 
         it.fabric_type,
@@ -1007,9 +985,8 @@ export const getSalesmanDashboard = async (req, res) => {
         AND inv.created_at >= :todayStart 
         AND inv.status = 'Paid'
         AND it.fabric_type IS NOT NULL
-        AND ii.fabric_type NOT IN ('Watch', 'Diamond')
       GROUP BY it.fabric_type
-      ORDER BY it.fabric_type DESC
+      ORDER BY it.fabric_type ASC
     `,
       {
         replacements: { userId, todayStart },
@@ -1024,7 +1001,6 @@ export const getSalesmanDashboard = async (req, res) => {
         ii.id,
         ii.item_name AS name,
         ii.fabric_type,
-        ii.fabric_type,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -1032,7 +1008,7 @@ export const getSalesmanDashboard = async (req, res) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.fabric_type, it.fabric_type, ii.fabric_type
+      GROUP BY it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -1053,12 +1029,12 @@ export const getSalesmanDashboard = async (req, res) => {
           date: d.date,
           revenue: parseFloat(d.revenue || 0),
         })),
-        sales_by_category_karat: categoryKaratSales.map((c) => ({
+        sales_by_category_karat: categoryFabricSales.map((c) => ({
           name: c.name,
           revenue: parseFloat(c.revenue || 0),
           quantity: parseInt(c.quantity || 0),
         })),
-        sales_by_karat: karatSales.map((k) => ({
+        sales_by_karat: fabricSales.map((k) => ({
           fabric_type: k.fabric_type || null,
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
@@ -1066,7 +1042,6 @@ export const getSalesmanDashboard = async (req, res) => {
         top_5_items: topItems.map((i) => ({
           id: i.id,
           name: i.name,
-          category: i.category,
           fabric_type: i.fabric_type || null,
           revenue: parseFloat(i.revenue || 0),
           quantity: parseInt(i.quantity || 0),
@@ -1453,43 +1428,42 @@ export const getDashboardAnalytics = async (req, res) => {
           };
         });
 
-        // 4. Karat Distribution (only for Gold, Silver, Platinum - exclude Watch and Diamond)
-        let karatQuery = `
+        // 4. Fabric distribution
+        let fabricQuery = `
           SELECT it.fabric_type, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity, SUM(it.meters * COALESCE(it.quantity,1)) AS meters
           FROM "${schema}".invoice_items it
           INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
           INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
           WHERE inv.created_at BETWEEN :start AND :end
             AND it.fabric_type IS NOT NULL
-            AND ii.fabric_type NOT IN ('Watch', 'Diamond')
         `;
 
-        const karatReplacements = {
+        const fabricReplacements = {
           start: startDateObj,
           end: endDateObj,
         };
 
         if (branchFilter.branch_id) {
           if (branchFilter.branch_id[Op.in]) {
-            karatQuery += ` AND inv.branch_id IN (:branchIds)`;
-            karatReplacements.branchIds = branchFilter.branch_id[Op.in];
+            fabricQuery += ` AND inv.branch_id IN (:branchIds)`;
+            fabricReplacements.branchIds = branchFilter.branch_id[Op.in];
           } else if (typeof branchFilter.branch_id === "number") {
-            karatQuery += ` AND inv.branch_id = :branchId`;
-            karatReplacements.branchId = branchFilter.branch_id;
+            fabricQuery += ` AND inv.branch_id = :branchId`;
+            fabricReplacements.branchId = branchFilter.branch_id;
           }
         }
 
-        karatQuery += ` 
+        fabricQuery += ` 
           AND it.fabric_type IS NOT NULL
           GROUP BY it.fabric_type 
-          ORDER BY it.fabric_type DESC`;
+          ORDER BY it.fabric_type ASC`;
 
-        const fabricRaw = await sequelize.query(karatQuery, {
-          replacements: karatReplacements,
+        const fabricRaw = await sequelize.query(fabricQuery, {
+          replacements: fabricReplacements,
           type: sequelize.QueryTypes.SELECT,
         });
 
-        // Optimize: Fetch all karat items in one query
+        // Optimize: fetch all fabric items in one query
         const allFabricItems = await InvoiceItem.schema(schema).findAll({
           include: [
             {
@@ -1509,7 +1483,7 @@ export const getDashboardAnalytics = async (req, res) => {
           itemsByFabric[fabricKey].push(item);
         });
 
-        const karatDistribution = fabricRaw.map((row) => {
+        const fabricDistribution = fabricRaw.map((row) => {
           const fabricKey = row.fabric_type || "Other";
           const fabricItems = itemsByFabric[fabricKey] || [];
           let fabricCost = 0;
@@ -1611,7 +1585,7 @@ export const getDashboardAnalytics = async (req, res) => {
           charts: {
             sales_trend: salesTrendWithProfit,
             category_distribution: categoryDistribution,
-            fabric_distribution: karatDistribution,
+            fabric_distribution: fabricDistribution,
             branch_performance: branchPerformance,
           },
         };
@@ -1874,7 +1848,7 @@ export const getTopItems = async (req, res) => {
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at BETWEEN :startDate AND :endDate
       ${branchFilter.branch_id ? `AND inv.branch_id IN (:branchIds)` : ""}
-      GROUP BY ii.id, ii.item_name, ii.fabric_type, it.fabric_type
+      GROUP BY it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
       LIMIT :limit
     `,
@@ -1934,24 +1908,14 @@ export const getTopItems = async (req, res) => {
       const inventoryItem = inventoryItemsById[item.id];
 
       let cost = 0;
-      // For Watch and Diamond, use cost_per_meter as total (not per gram * weight)
-      if (
-        inventoryItem?.fabric_type === "Watch" ||
-        inventoryItem?.fabric_type === "Diamond"
-      ) {
-        cost =
-          parseFloat(inventoryItem?.cost_per_meter || 0) *
-          itemDetails.length;
-      } else {
-        // For Gold/Silver/Platinum, use cost_per_meter * weight
-        itemDetails.forEach((detail) => {
-          const buyPrice = parseFloat(
-            detail.inventory_item?.cost_per_meter || 0,
-          );
-          const weight = parseFloat(detail.meters || 0) * (parseInt(detail.quantity, 10) || 1);
-          cost += buyPrice * weight;
-        });
-      }
+      itemDetails.forEach((detail) => {
+        const buyPrice = parseFloat(detail.inventory_item?.cost_per_meter || 0);
+        const meters =
+          parseFloat(detail.meters || 0) *
+          (parseInt(detail.quantity, 10) || 1);
+        cost += buyPrice * meters;
+      });
+      void inventoryItem;
 
       return {
         id: item.id,

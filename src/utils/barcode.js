@@ -10,46 +10,33 @@ const generateRandomString = (length) => {
   return result;
 };
 
-/** Metal name may be custom (e.g. Arabic); map known ones, else use first letter from transliterated. */
-function metalToCode(metal) {
-  if (!metal || typeof metal !== "string") return "D";
-  const m = metal.trim();
-  if (m === "Gold") return "G";
-  if (m === "Silver") return "S";
-  if (m === "Platinum") return "P";
-  if (m === "Diamond") return "D";
-  if (m === "Watch") return "W";
-  const t = toBarcodeSafeCode(m, 1);
-  return t && t !== "X" ? t : "D";
+/** Fabric type -> 2 letter barcode prefix (works for custom/Arabic names too). */
+function fabricToCode(fabric) {
+  if (!fabric || typeof fabric !== "string") return "FB";
+  const code = toBarcodeSafeCode(fabric.trim(), 2);
+  return code && code !== "X" ? code : "FB";
 }
 
-export const generateUniqueBarcode = async (Model, metal, category, karat) => {
+export const generateUniqueBarcode = async (Model, fabricType, design, variant) => {
   let isUnique = false;
   let barcode = "";
   let attempts = 0;
 
-  const metalCode = metalToCode(metal);
-  const catCode =
-    category && String(category).trim()
-      ? toBarcodeSafeCode(category, 3)
-      : "GEN";
-  // Diamond/Watch have no karat; otherwise normalize karat (Arabic digits → Latin), digits only
-  let karatCode = "00";
-  if (
-    metalCode !== "D" &&
-    metalCode !== "W" &&
-    karat != null &&
-    String(karat).trim() !== ""
-  ) {
-    const k = normalizeToLatinDigits(String(karat))
+  const fabricCode = fabricToCode(fabricType);
+  const designCode =
+    design && String(design).trim() ? toBarcodeSafeCode(design, 3) : "GEN";
+  // Optional variant code (e.g. width in cm) kept as two digits
+  let variantCode = "00";
+  if (variant != null && String(variant).trim() !== "") {
+    const v = normalizeToLatinDigits(String(variant))
       .replace(/\D/g, "")
       .slice(0, 2);
-    karatCode = k.length >= 1 ? k.padEnd(2, "0") : "00";
+    variantCode = v.length >= 1 ? v.padEnd(2, "0") : "00";
   }
 
   while (!isUnique && attempts < 10) {
     const randomPart = generateRandomString(8);
-    barcode = `${metalCode}-${catCode}-${karatCode}-${randomPart}`;
+    barcode = `${fabricCode}-${designCode}-${variantCode}-${randomPart}`;
 
     // Optimize: Use findOne with only barcode field (uses index) and limit 1
     const existing = await Model.findOne({

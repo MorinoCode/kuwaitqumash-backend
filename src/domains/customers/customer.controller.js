@@ -334,7 +334,7 @@ export const getCustomerAnalytics = async (req, res) => {
         totalItems += parseInt(item.quantity || 1);
         totalMeters += parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
 
-        // Karat preference
+        // Fabric preference
         const fabricType =
       item.fabric_type || item.inventory_item?.fabric_type || "Other";
         if (fabricType) {

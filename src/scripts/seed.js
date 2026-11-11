@@ -14,15 +14,35 @@ import logger from "../utils/logger.js";
 
 dotenv.config();
 
-const KARATS = ["18", "21", "22", "24"];
-const CATEGORIES = [
-  "Ring",
-  "Necklace",
-  "Bracelet",
-  "Earring",
-  "Set",
-  "General",
+const FABRIC_TYPES = [
+  "Cotton",
+  "Silk",
+  "Wool",
+  "Linen",
+  "Polyester",
+  "Viscose",
+  "Chiffon",
+  "Crepe",
+  "Satin",
+  "Velvet",
+  "Lace",
+  "Denim",
 ];
+const PATTERNS = [
+  "Plain",
+  "Floral",
+  "Striped",
+  "Checkered",
+  "Polka Dot",
+  "Geometric",
+  "Embroidered",
+  "Printed",
+];
+const COLORS = ["White", "Black", "Beige", "Red", "Blue", "Navy", "Green", "Grey"];
+const BASE_COST = {
+  Cotton: 2.5, Silk: 9.5, Wool: 7, Linen: 6, Polyester: 1.8, Viscose: 2.4,
+  Chiffon: 2.2, Crepe: 2.8, Satin: 3.2, Velvet: 4.5, Lace: 6.5, Denim: 3,
+};
 
 const seedDatabase = async () => {
   try {
@@ -34,7 +54,7 @@ const seedDatabase = async () => {
     const passwordHash = await bcrypt.hash("123456", 10);
 
     const tenant = await Tenant.create({
-      name: "Grace Jewelers",
+      name: "KuwaitQumash Fabrics",
       slug: "grace",
       db_schema: "public",
       owner_name: "Grace Owner",
@@ -115,23 +135,29 @@ const seedDatabase = async () => {
         branchCustomers.push(cust);
       }
 
-      for (const cat of CATEGORIES) {
+      for (const fabricType of FABRIC_TYPES) {
         for (let m = 0; m < 10; m++) {
-          const fabric_type = faker.helpers.arrayElement(KARATS);
-          const meters = faker.number.float({
-            min: 2,
-            max: 50,
+          const pattern = faker.helpers.arrayElement(PATTERNS);
+          const color = faker.helpers.arrayElement(COLORS);
+          const lengthMeters = faker.number.float({
+            min: 20,
+            max: 120,
             precision: 0.01,
           });
-          let basePrice = fabric_type === "24" ? 20 : fabric_type === "21" ? 17 : 14.5;
+          const cost = BASE_COST[fabricType] || 3;
 
           await InventoryItem.create({
-            item_name: `${cat} ${faker.commerce.productAdjective()}`,
-            category: cat,
-            fabric_type: fabric_type,
-            meters: meters,
-            cost_per_meter: (basePrice - 1).toFixed(3),
-            barcode: `${branchId}-${cat.substring(0, 2).toUpperCase()}-${faker.string.numeric(6)}`,
+            item_name: `${fabricType} ${pattern}`,
+            fabric_type: fabricType,
+            pattern,
+            color,
+            width_cm: faker.helpers.arrayElement([90, 110, 140, 150, 160]),
+            unit: "meter",
+            length_m: lengthMeters,
+            quantity: faker.number.int({ min: 1, max: 5 }),
+            cost_per_meter: (cost * 0.9).toFixed(3),
+            price_per_meter: (cost * 1.4).toFixed(3),
+            barcode: `${branchId}-${fabricType.substring(0, 2).toUpperCase()}-${faker.string.numeric(6)}`,
             branch_id: branchId,
             created_by: adminId,
             status: "In Stock",
@@ -146,22 +172,28 @@ const seedDatabase = async () => {
         const soldItems = [];
         const itemCount = faker.number.int({ min: 1, max: 4 });
         let totalAmount = 0;
-        let totalWeight = 0;
+        let totalMeters = 0;
 
         for (let x = 0; x < itemCount; x++) {
-          const w = faker.number.float({ min: 3, max: 25, precision: 0.01 });
-          const cat = faker.helpers.arrayElement(CATEGORIES);
-          const k = faker.helpers.arrayElement(KARATS);
-          const p = k === "24" ? 22 : k === "22" ? 19 : 17.5;
-          const labor = faker.number.float({ min: 2, max: 8, precision: 0.5 });
-          const sub = w * (p + labor);
+          const w = faker.number.float({ min: 1, max: 12, precision: 0.01 });
+          const fabricType = faker.helpers.arrayElement(FABRIC_TYPES);
+          const pattern = faker.helpers.arrayElement(PATTERNS);
+          const color = faker.helpers.arrayElement(COLORS);
+          const p = parseFloat(((BASE_COST[fabricType] || 3) * 1.4).toFixed(3));
+          const discount = faker.datatype.boolean(0.25)
+            ? faker.number.float({ min: 0.5, max: 3, precision: 0.5 })
+            : 0;
+          const sub = parseFloat((w * p - discount).toFixed(3));
 
           const soldItem = await InventoryItem.create({
-            item_name: `${cat} ${faker.commerce.productAdjective()}`,
-            category: cat,
-            fabric_type: k,
-            meters: w,
-            cost_per_meter: (p - 1.5).toFixed(3),
+            item_name: `${fabricType} ${pattern}`,
+            fabric_type: fabricType,
+            pattern,
+            color,
+            unit: "meter",
+            length_m: w,
+            cost_per_meter: ((BASE_COST[fabricType] || 3) * 0.9).toFixed(3),
+            price_per_meter: p.toFixed(3),
             barcode: `SOLD-${branchId}-${n}-${x}-${faker.string.numeric(4)}`,
             branch_id: branchId,
             created_by: adminId,
@@ -174,20 +206,21 @@ const seedDatabase = async () => {
             inventory_item_id: soldItem.id,
             item_name: soldItem.item_name,
             meters: w,
-            fabric_type: k,
-            price_per_gram: p,
-            discount: labor,
+            fabric_type: fabricType,
+            color,
+            price_per_meter: p,
+            discount,
             subtotal: sub,
           });
 
           totalAmount += sub;
-          totalWeight += w;
+          totalMeters += w;
         }
 
         const invoice = await Invoice.create({
           invoice_number: `INV-${branchId}-${Date.now()}-${n}`,
           customer_id: randomCustomer.id,
-          total_meters: totalWeight,
+          total_meters: totalMeters,
           total_amount: totalAmount,
           branch_id: branchId,
           created_by: adminId,
@@ -201,8 +234,9 @@ const seedDatabase = async () => {
             inventory_item_id: item.inventory_item_id,
             item_name: item.item_name,
             fabric_type: item.fabric_type,
+            color: item.color,
             meters: item.meters,
-            price_per_meter: item.price_per_gram,
+            price_per_meter: item.price_per_meter,
             discount: item.discount,
             total_price: item.subtotal,
           });

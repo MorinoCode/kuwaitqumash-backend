@@ -26,7 +26,6 @@ export const addItem = async (req, res) => {
       fabric_type,
       item_name,
       item_name_ar,
-      category,
       pattern,
       country_of_origin,
       description,
@@ -37,8 +36,6 @@ export const addItem = async (req, res) => {
       price_per_meter,
       branch_id,
       min_stock_level,
-      // Stones
-      stones,
     } = req.body;
 
     // Input Validation & Sanitization
@@ -55,16 +52,30 @@ export const addItem = async (req, res) => {
     //   return res.status(400).json({ message: 'Item name is required.' });
     // }
 
-    if (!category || typeof category !== "string") {
-      return res.status(400).json({ message: "Category is required." });
+    // Pattern (design) is optional for fabric items.
+
+    const parsedLength = parseFloat(
+      normalizeToLatinDigits(String(length_m ?? ""))
+    );
+    if (isNaN(parsedLength) || !parsedLength || parsedLength <= 0) {
+      return res
+        .status(400)
+        .json({ message: "Valid length_m (greater than 0) is required." });
     }
 
-    // Pattern (design) is optional for fabric items.
+    const parsedBuyPrice = parseFloat(
+      normalizeToLatinDigits(String(cost_per_meter ?? ""))
+    );
+    if (isNaN(parsedBuyPrice) || parsedBuyPrice < 0) {
+      return res
+        .status(400)
+        .json({ message: "Valid cost per meter is required." });
+    }
 
     // Generate item_name from pattern if not provided
     let finalItemName = item_name;
     if (!finalItemName || finalItemName.trim().length === 0) {
-      finalItemName = pattern || category || `${fabric_type} Item`;
+      finalItemName = pattern || `${fabric_type} Item`;
     }
 
     // Sanitize inputs
@@ -79,31 +90,14 @@ export const addItem = async (req, res) => {
       ? description_ar.trim().substring(0, 5000)
       : null;
 
-    // Parse stones if it's a string
-    let parsedStones = [];
-    if (stones) {
-      try {
-        parsedStones = typeof stones === "string" ? JSON.parse(stones) : stones;
-        if (!Array.isArray(parsedStones)) {
-          parsedStones = [];
-        }
-      } catch (e) {
-        logger.warn("Error parsing stones", {
-          component: "inventory",
-          error: e?.message,
-        });
-        parsedStones = [];
-      }
-    }
-
     const barcode = await generateUniqueBarcode(
       InventoryItem.schema(schema),
       fabric_type,
-      category,
+      pattern,
       null
     );
 
-    const storageFolder = `${tenantId}_${category || "general"}`;
+    const storageFolder = `${tenantId}_${fabric_type || "general"}`;
     const imagePromises = (req.files || []).map((file) =>
       saveImage(file, "inventory", storageFolder)
     );
@@ -114,7 +108,6 @@ export const addItem = async (req, res) => {
       fabric_type,
       item_name: sanitizedItemName,
       item_name_ar: sanitizedItemNameAr,
-      category: category.trim(),
       pattern: pattern ? pattern.trim() : null,
       country_of_origin: country_of_origin ? country_of_origin.trim() : null,
       description: sanitizedDescription,
@@ -140,8 +133,6 @@ export const addItem = async (req, res) => {
       created_by: req.user.id,
       images: uploadedImages,
       status: "In Stock",
-      stones:
-        fabric_type !== "Watch" && fabric_type !== "Diamond" ? parsedStones : [],
     });
 
     // Optimize response: Return only essential fields (exclude large fields like images)
@@ -149,7 +140,6 @@ export const addItem = async (req, res) => {
       id: newItem.id,
       barcode: newItem.barcode,
       item_name: newItem.item_name,
-      category: newItem.category,
       pattern: newItem.pattern,
       fabric_type: newItem.fabric_type || "",
       color: newItem.color || null,
@@ -187,7 +177,9 @@ export const getInventory = async (req, res) => {
       branch_ids,
       search,
       fabric_type,
-      category,
+      pattern,
+      color,
+      unit,
       country_of_origin,
       status: statusFilter,
       page = 1,
@@ -227,10 +219,11 @@ export const getInventory = async (req, res) => {
     }
 
     if (fabric_type && fabric_type !== "All") whereClause.fabric_type = fabric_type;
-    if (category && category !== "All") whereClause.category = category;
+    if (pattern && pattern !== "All") whereClause.pattern = pattern;
+    if (color && color !== "All") whereClause.color = color;
+    if (unit && unit !== "All") whereClause.unit = unit;
     if (country_of_origin && country_of_origin !== "All")
       whereClause.country_of_origin = country_of_origin;
-    if (fabricType && fabricType !== "All") whereClause.fabric_type = fabricType;
 
     if (search) {
       // Optimized search: Use prefix matching first (faster with text_pattern_ops indexes)
@@ -481,7 +474,6 @@ export const updateItem = async (req, res) => {
       fabric_type,
       item_name,
       item_name_ar,
-      category,
       country_of_origin,
       description,
       description_ar,
@@ -491,15 +483,12 @@ export const updateItem = async (req, res) => {
       supplier_name,
       min_stock_level,
       status,
-      // Stones
-      stones,
     } = req.body;
 
     const updateData = {
       fabric_type,
       item_name,
       item_name_ar,
-      category,
       country_of_origin,
       description,
       description_ar,
@@ -510,20 +499,6 @@ export const updateItem = async (req, res) => {
       min_stock_level,
       status,
     };
-
-    // Parse stones if it's a string
-    if (stones !== undefined) {
-      try {
-        const parsedStones =
-          typeof stones === "string" ? JSON.parse(stones) : stones;
-        updateData.stones = Array.isArray(parsedStones) ? parsedStones : [];
-      } catch (e) {
-        if (process.env.NODE_ENV === "development") {
-          console.error("Error parsing stones:", e);
-        }
-        updateData.stones = [];
-      }
-    }
 
     // Sanitize string inputs
     if (updateData.item_name)
@@ -540,7 +515,8 @@ export const updateItem = async (req, res) => {
         .substring(0, 5000);
 
     if (req.files && req.files.length > 0) {
-      const categoryForFolder = updateData.category || item.category;
+      const categoryForFolder =
+        updateData.fabric_type || item.fabric_type || "general";
       const storageFolder = `${tenantId}_${categoryForFolder}`;
 
       const imagePromises = req.files.map((file) =>
