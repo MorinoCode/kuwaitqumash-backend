@@ -577,7 +577,7 @@ export const getStaffAnalytics = async (req, res) => {
     let totalMeters = 0;
     let totalProfit = 0;
     const fabricCount = {};
-    const categoryCount = {};
+    const patternCount = {};
     const saleDates = [];
     const saleAmounts = [];
     const dayOfWeekCount = {};
@@ -616,10 +616,10 @@ export const getStaffAnalytics = async (req, res) => {
         }
 
         // Category preference
-        const category = item.inventory_item?.category;
+        const pattern = item.inventory_item?.pattern;
         if (category) {
-          categoryCount[category] =
-            (categoryCount[category] || 0) + parseInt(item.quantity || 1);
+          patternCount[pattern] =
+            (patternCount[pattern] || 0) + parseInt(item.quantity || 1);
         }
 
         // Profit calculation
@@ -636,8 +636,8 @@ export const getStaffAnalytics = async (req, res) => {
     );
 
     // Find preferred category
-    const preferredCategory = Object.keys(categoryCount).reduce((a, b) =>
-      categoryCount[a] > categoryCount[b] ? a : b,
+    const preferredPattern = Object.keys(patternCount).reduce((a, b) =>
+      patternCount[a] > patternCount[b] ? a : b,
     );
 
     // Calculate average sale value
@@ -746,9 +746,9 @@ export const getStaffAnalytics = async (req, res) => {
           insights: insights,
           preferences: {
             preferred_fabric_type: preferredFabric || null,
-            preferred_category: preferredCategory || null,
+            preferred_pattern: preferredPattern || null,
             fabric_distribution: fabricCount,
-            category_distribution: categoryCount,
+            pattern_distribution: patternCount,
           },
           behavior: {
             total_sales: totalSales.toFixed(3),

@@ -163,8 +163,8 @@ const aggregateOwnerDashboard = async (tenant) => {
     const categoryFabricSales = await sequelize.query(
       `
       SELECT 
-        CONCAT(it.fabric_type, ' · ', ii.category) AS name,
-        ii.category,
+        CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
+        ii.pattern,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -172,7 +172,7 @@ const aggregateOwnerDashboard = async (tenant) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.category, it.fabric_type
+      GROUP BY it.fabric_type, ii.pattern
       ORDER BY revenue DESC
     `,
       {
@@ -197,7 +197,7 @@ const aggregateOwnerDashboard = async (tenant) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              where: { category: item.category },
+              where: { pattern: item.pattern },
               attributes: [],
             },
           ],
@@ -208,7 +208,7 @@ const aggregateOwnerDashboard = async (tenant) => {
         const cost = calculateProfit(items);
         return {
           name: item.name,
-          category: item.category,
+          pattern: item.pattern,
           fabric_type: item.fabric_type,
           revenue: parseFloat(item.revenue || 0),
           profit: parseFloat(item.revenue || 0) - cost,
@@ -242,7 +242,7 @@ const aggregateOwnerDashboard = async (tenant) => {
       SELECT 
         ii.id,
         ii.item_name AS name,
-        ii.category,
+        ii.pattern,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -250,7 +250,7 @@ const aggregateOwnerDashboard = async (tenant) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.category, it.fabric_type
+      GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -282,7 +282,7 @@ const aggregateOwnerDashboard = async (tenant) => {
         return {
           id: item.id,
           name: item.name,
-          category: item.category,
+          pattern: item.pattern,
           fabric_type: item.fabric_type,
           revenue: parseFloat(item.revenue || 0),
           profit: parseFloat(item.revenue || 0) - cost,
@@ -370,7 +370,7 @@ const aggregateOwnerDashboard = async (tenant) => {
         low_stock_items: lowStockItems.map((i) => ({
           id: i.id,
           name: i.item_name,
-          category: i.category,
+          pattern: i.pattern,
           quantity: i.quantity,
           min_stock_level: i.min_stock_level,
         })),
@@ -478,8 +478,8 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
     const categoryFabricSales = await sequelize.query(
       `
       SELECT 
-        CONCAT(it.fabric_type, ' · ', ii.category) AS name,
-        ii.category,
+        CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
+        ii.pattern,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -487,7 +487,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.category, it.fabric_type
+      GROUP BY it.fabric_type, ii.pattern
       ORDER BY revenue DESC
     `,
       {
@@ -594,7 +594,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       SELECT 
         ii.id,
         ii.item_name AS name,
-        ii.category,
+        ii.pattern,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -602,7 +602,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.category, it.fabric_type
+      GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -700,7 +700,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
         top_5_items_revenue: topItemsRevenue.map((i) => ({
           id: i.id,
           name: i.name,
-          category: i.category,
+          pattern: i.pattern,
           fabric_type: i.fabric_type,
           revenue: parseFloat(i.revenue || 0),
           quantity: parseInt(i.quantity || 0),
@@ -714,7 +714,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
         low_stock_items: lowStockItems.map((i) => ({
           id: i.id,
           name: i.item_name,
-          category: i.category,
+          pattern: i.pattern,
           quantity: i.quantity,
           min_stock_level: i.min_stock_level,
         })),
@@ -798,8 +798,8 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
     const categoryFabricSales = await sequelize.query(
       `
       SELECT 
-        CONCAT(it.fabric_type, ' · ', ii.category) AS name,
-        ii.category,
+        CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
+        ii.pattern,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -807,7 +807,7 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.category, it.fabric_type
+      GROUP BY it.fabric_type, ii.pattern
       ORDER BY revenue DESC
     `,
       {
@@ -841,7 +841,7 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
       SELECT 
         ii.id,
         ii.item_name AS name,
-        ii.category,
+        ii.pattern,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
@@ -849,7 +849,7 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.category, it.fabric_type
+      GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -883,7 +883,7 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
         top_5_items: topItems.map((i) => ({
           id: i.id,
           name: i.name,
-          category: i.category,
+          pattern: i.pattern,
           fabric_type: i.fabric_type,
           revenue: parseFloat(i.revenue || 0),
           quantity: parseInt(i.quantity || 0),

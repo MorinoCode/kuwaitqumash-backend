@@ -394,7 +394,7 @@ export const getOwnerDashboard = async (req, res) => {
         low_stock_items: lowStockItems.map((i) => ({
           id: i.id,
           name: i.item_name,
-          category: i.category,
+          pattern: i.pattern,
           quantity: i.quantity,
           min_stock_level: i.min_stock_level,
         })),
@@ -840,7 +840,7 @@ export const getManagerDashboard = async (req, res) => {
         low_stock_items: lowStockItems.map((i) => ({
           id: i.id,
           name: i.item_name,
-          category: i.category,
+          pattern: i.pattern,
           quantity: i.quantity,
           min_stock_level: i.min_stock_level,
         })),
@@ -1402,12 +1402,12 @@ export const getDashboardAnalytics = async (req, res) => {
         // Group items by category
         const itemsByCategory = {};
         allCategoryItems.forEach((item) => {
-          const category = item.inventory_item?.category;
+          const pattern = item.inventory_item?.pattern;
           if (category) {
-            if (!itemsByCategory[category]) {
-              itemsByCategory[category] = [];
+            if (!itemsByCategory[pattern]) {
+              itemsByCategory[pattern] = [];
             }
-            itemsByCategory[category].push(item);
+            itemsByCategory[pattern].push(item);
           }
         });
 
@@ -1584,7 +1584,7 @@ export const getDashboardAnalytics = async (req, res) => {
           },
           charts: {
             sales_trend: salesTrendWithProfit,
-            category_distribution: categoryDistribution,
+            pattern_distribution: categoryDistribution,
             fabric_distribution: fabricDistribution,
             branch_performance: branchPerformance,
           },
@@ -1920,7 +1920,7 @@ export const getTopItems = async (req, res) => {
       return {
         id: item.id,
         name: item.name,
-        category: item.category,
+        pattern: item.pattern,
         fabric_type: item.fabric_type || null,
         revenue: parseFloat(item.revenue) || 0,
         profit: (parseFloat(item.revenue) || 0) - cost,
