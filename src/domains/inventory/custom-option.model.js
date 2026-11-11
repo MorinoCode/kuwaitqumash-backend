@@ -12,7 +12,7 @@ const CustomInventoryOption = sequelize.define(
     type: {
       type: DataTypes.STRING(20),
       allowNull: false,
-      validate: { isIn: [["metal", "category", "subcategory"]] },
+      validate: { isIn: [["fabric", "category", "pattern"]] },
     },
     fabric_type: {
       type: DataTypes.STRING,

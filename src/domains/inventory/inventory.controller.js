@@ -698,7 +698,7 @@ export const getCustomOptions = async (req, res) => {
       whereConditions.push(`type = $${paramIndex++}`);
       queryParams.push(type);
 
-      if (type === "metal") {
+      if (type === "fabric") {
         whereConditions.push(`fabric_type IS NULL`);
         whereConditions.push(`category IS NULL`);
       }
@@ -807,9 +807,9 @@ export const saveCustomOption = async (req, res) => {
       return res.status(400).json({ message: "Type and name are required." });
     }
 
-    if (!["metal", "category", "pattern"].includes(type)) {
+    if (!["fabric", "category", "pattern"].includes(type)) {
       return res.status(400).json({
-        message: "Invalid type. Must be metal, category, or pattern.",
+        message: "Invalid type. Must be fabric, category, or pattern.",
       });
     }
 

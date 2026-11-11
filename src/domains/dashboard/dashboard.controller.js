@@ -362,8 +362,8 @@ export const getOwnerDashboard = async (req, res) => {
           name: b.branch?.name || "Unknown",
           revenue: parseFloat(b.total_sales || 0),
         })),
-        sales_by_category_karat: categoryFabricWithProfit,
-        sales_by_karat: fabricSales.map((k) => ({
+        sales_by_category_fabric: categoryFabricWithProfit,
+        sales_by_fabric: fabricSales.map((k) => ({
           fabric_type: k.fabric_type || null,
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
@@ -1000,12 +1000,12 @@ export const getSalesmanDashboard = async (req, res) => {
           date: d.date,
           revenue: parseFloat(d.revenue || 0),
         })),
-        sales_by_category_karat: categoryFabricSales.map((c) => ({
+        sales_by_category_fabric: categoryFabricSales.map((c) => ({
           name: c.name,
           revenue: parseFloat(c.revenue || 0),
           quantity: parseInt(c.quantity || 0),
         })),
-        sales_by_karat: fabricSales.map((k) => ({
+        sales_by_fabric: fabricSales.map((k) => ({
           fabric_type: k.fabric_type || null,
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),

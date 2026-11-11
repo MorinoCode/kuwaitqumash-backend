@@ -11,7 +11,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-const ROOT = process.env.CLOUDINARY_FOLDER || "gold_app";
+const ROOT = process.env.CLOUDINARY_FOLDER || "kuwaitqumash";
 
 const sanitizeSegment = (s) =>
   (s || "")

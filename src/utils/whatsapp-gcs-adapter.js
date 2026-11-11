@@ -7,14 +7,14 @@ import logger from "./logger.js";
 let storage = null;
 let bucket = null;
 const BUCKET_NAME =
-  process.env.WHATSAPP_SESSIONS_BUCKET || "kuwiatgoldpro-whatsapp-sessions";
+  process.env.WHATSAPP_SESSIONS_BUCKET || "kuwaitqumash-whatsapp-sessions";
 
 const initStorage = () => {
   if (storage) return;
 
   try {
     storage = new Storage({
-      projectId: process.env.GCP_PROJECT_ID || "kuwiatgoldpro",
+      projectId: process.env.GCP_PROJECT_ID || "kuwaitqumash",
     });
     bucket = storage.bucket(BUCKET_NAME);
     logger.info("GCS Storage initialized for WhatsApp sessions", {

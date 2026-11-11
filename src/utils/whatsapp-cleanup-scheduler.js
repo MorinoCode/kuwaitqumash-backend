@@ -3,7 +3,7 @@ import logger from "./logger.js";
 import { Storage } from "@google-cloud/storage";
 
 const BUCKET_NAME =
-  process.env.WHATSAPP_SESSIONS_BUCKET || "kuwiatgoldpro-whatsapp-sessions";
+  process.env.WHATSAPP_SESSIONS_BUCKET || "kuwaitqumash-whatsapp-sessions";
 const DAYS_OLD = 2;
 
 const ESSENTIAL_FILES = [
@@ -91,7 +91,7 @@ async function runCleanup() {
     });
 
     const storage = new Storage({
-      projectId: process.env.GCP_PROJECT_ID || "kuwiatgoldpro",
+      projectId: process.env.GCP_PROJECT_ID || "kuwaitqumash",
     });
 
     const bucket = storage.bucket(BUCKET_NAME);

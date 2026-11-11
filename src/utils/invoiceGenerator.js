@@ -256,9 +256,9 @@ export const generateInvoicePDF = async (
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
 
-  const gold = [0, 0, 0];
-  const darkGold = [0, 0, 0];
-  const lightGold = [245, 245, 245];
+  const brand = [0, 0, 0];
+  const brandDark = [0, 0, 0];
+  const brandLight = [245, 245, 245];
 
   const m = 5;
   const bottomMargin = 6;
@@ -316,7 +316,7 @@ export const generateInvoicePDF = async (
       currentPage++;
       y = m;
 
-      doc.setDrawColor(...darkGold);
+      doc.setDrawColor(...brandDark);
       doc.setLineWidth(1);
       doc.rect(2, 2, pageW - 4, pageH - 4);
 
@@ -347,7 +347,7 @@ export const generateInvoicePDF = async (
     return false;
   };
 
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(1);
   doc.rect(2, 2, pageW - 4, pageH - 4);
 
@@ -465,7 +465,7 @@ export const generateInvoicePDF = async (
   doc.setTextColor(0, 0, 0);
   y += headerHeight + 1.0;
 
-  doc.setDrawColor(...gold);
+  doc.setDrawColor(...brand);
   doc.setLineWidth(0.4);
   doc.line(m, y, pageW - m, y);
   y += 1.5;
@@ -530,15 +530,15 @@ export const generateInvoicePDF = async (
 
   const maxBoxHeight = Math.max(customerBoxHeight, invoiceBoxHeight);
 
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(0.25);
   doc.rect(m, y, boxWidth, maxBoxHeight);
-  doc.setFillColor(...lightGold);
+  doc.setFillColor(...brandLight);
   doc.rect(m + 0.3, y + 0.3, boxWidth - 0.6, maxBoxHeight - 0.6, "F");
 
   doc.setFillColor(255, 255, 255);
   doc.rect(m + 0.3, y + 0.3, boxWidth - 0.6, boxHeaderHeight, "F");
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(0.25);
   doc.line(m, y + boxHeaderHeight + 0.3, m + boxWidth, y + boxHeaderHeight + 0.3);
   setArFont(true);
@@ -595,15 +595,15 @@ export const generateInvoicePDF = async (
   });
 
   const invoiceBoxX = m + boxWidth + 4;
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(0.25);
   doc.rect(invoiceBoxX, y, boxWidth, maxBoxHeight);
-  doc.setFillColor(...lightGold);
+  doc.setFillColor(...brandLight);
   doc.rect(invoiceBoxX + 0.3, y + 0.3, boxWidth - 0.6, maxBoxHeight - 0.6, "F");
 
   doc.setFillColor(255, 255, 255);
   doc.rect(invoiceBoxX + 0.3, y + 0.3, boxWidth - 0.6, boxHeaderHeight, "F");
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(0.25);
   doc.line(invoiceBoxX, y + boxHeaderHeight + 0.3, invoiceBoxX + boxWidth, y + boxHeaderHeight + 0.3);
   setArFont(true);
@@ -688,7 +688,7 @@ export const generateInvoicePDF = async (
   const tableStartY = y;
 
   doc.setFillColor(255, 255, 255);
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.rect(tableStartX, tableStartY, tableWidth, tableHeaderHeight, "FD");
 
   doc.setFontSize(5.0);
@@ -726,7 +726,7 @@ export const generateInvoicePDF = async (
   itemsList.forEach((item, idx) => {
     if (checkPageBreak(rowHeight + 1.5)) {
       doc.setFillColor(255, 255, 255);
-      doc.setDrawColor(...darkGold);
+      doc.setDrawColor(...brandDark);
       doc.rect(tableStartX, y, tableWidth, tableHeaderHeight, "FD");
       doc.setFontSize(5.0);
       doc.setTextColor(0, 0, 0);
@@ -779,7 +779,7 @@ export const generateInvoicePDF = async (
         : "0.000";
 
     if (idx % 2 === 1) {
-      doc.setFillColor(...lightGold);
+      doc.setFillColor(...brandLight);
       doc.rect(tableStartX, y, tableWidth, rowHeight, "F");
     }
 
@@ -842,7 +842,7 @@ export const generateInvoicePDF = async (
     y += rowHeight;
   });
 
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(0.4);
   doc.line(tableStartX, y, tableStartX + tableWidth, y);
   y += 1.5;
@@ -854,7 +854,7 @@ export const generateInvoicePDF = async (
   );
   if (itemsWithStones.length > 0) {
     checkPageBreak(8);
-    doc.setDrawColor(...gold);
+    doc.setDrawColor(...brand);
     doc.setLineWidth(0.25);
     const boxPadding = 3;
     const boxStartY = y;
@@ -895,7 +895,7 @@ export const generateInvoicePDF = async (
 
   checkPageBreak(8);
 
-  doc.setDrawColor(...gold);
+  doc.setDrawColor(...brand);
   doc.setLineWidth(0.4);
   doc.line(m, y, pageW - m, y);
   y += 4.0;
@@ -974,11 +974,11 @@ export const generateInvoicePDF = async (
   checkPageBreak(paymentSectionHeight + 2);
 
   doc.setFillColor(255, 255, 255);
-  doc.setDrawColor(...gold);
+  doc.setDrawColor(...brand);
   doc.setLineWidth(0.25);
   doc.rect(m, y - 0.5, pageW - 2 * m, paymentSectionHeight, "FD");
 
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(0.25);
   doc.line(m, y + paymentHeaderHeight, pageW - m, y + paymentHeaderHeight);
 
@@ -1103,7 +1103,7 @@ export const generateInvoicePDF = async (
 
   const netAmountHeight = 8;
   doc.setFillColor(255, 255, 255);
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.rect(m, y - 0.5, pageW - 2 * m, netAmountHeight, "FD");
   doc.setTextColor(0, 0, 0);
   setArFont(true);
@@ -1127,10 +1127,10 @@ export const generateInvoicePDF = async (
 
   checkPageBreak(termsHeight + 2);
 
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(0.4);
   doc.rect(m, y - 0.5, pageW - 2 * m, termsHeight);
-  doc.setFillColor(...lightGold);
+  doc.setFillColor(...brandLight);
   doc.rect(m + 0.3, y - 0.3, pageW - 2 * m - 0.6, termsHeight - 0.6, "F");
 
   doc.setTextColor(80, 80, 80);
@@ -1153,7 +1153,7 @@ export const generateInvoicePDF = async (
   const kycW = pageW - 2 * m;
   const rowH = 6.5;
 
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.setLineWidth(0.2);
 
   const drawCell = (x, cellY, w, h, bg = null) => {
@@ -1168,19 +1168,19 @@ export const generateInvoicePDF = async (
     const boxS = 1.8;
     const boxX = rightX - boxS - 1.0;
     const boxY = midY - boxS / 2;
-    doc.setDrawColor(...darkGold);
+    doc.setDrawColor(...brandDark);
     doc.rect(boxX, boxY, boxS, boxS);
     setArFont(false);
     doc.text(text, boxX - 1.0, midY + 1.2, { align: "right" });
   };
 
-  const headerBg = lightGold;
+  const headerBg = brandLight;
 
   currentY = y;
 
   let w1 = kycW * 0.15;
   let rx = kycX + kycW;
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   drawCell(rx - w1, currentY, w1, rowH, headerBg);
   setArFont(true);
   doc.setFontSize(6.0);
@@ -1274,7 +1274,7 @@ export const generateInvoicePDF = async (
   doc.text("توقيع العميل", kycX + kycW - 3, currentY, { align: "right" });
   doc.text("اسم البائع/ 1.", kycX + 3, currentY);
 
-  doc.setDrawColor(...gold);
+  doc.setDrawColor(...brand);
   doc.setLineWidth(0.4);
   doc.line(kycX + kycW - 28, currentY + 1.5, kycX + kycW - 3, currentY + 1.5);
   doc.line(kycX + 3, currentY + 1.5, kycX + 28, currentY + 1.5);
@@ -1318,7 +1318,7 @@ export const generateInvoicePDF = async (
     if (idFront) {
       const idX = currentIdX;
       const idY = y;
-      doc.setDrawColor(...darkGold);
+      doc.setDrawColor(...brandDark);
       doc.setLineWidth(idBorderWidth);
       doc.rect(
         idX - idBorderWidth / 2,
@@ -1340,7 +1340,7 @@ export const generateInvoicePDF = async (
     if (idBack) {
       const idX = currentIdX;
       const idY = y;
-      doc.setDrawColor(...darkGold);
+      doc.setDrawColor(...brandDark);
       doc.setLineWidth(idBorderWidth);
       doc.rect(
         idX - idBorderWidth / 2,
@@ -1365,7 +1365,7 @@ export const generateInvoicePDF = async (
   if (branchLoc || branchPh) {
     checkPageBreak(6);
     y += 1.5;
-    doc.setDrawColor(...gold);
+    doc.setDrawColor(...brand);
     doc.setLineWidth(0.2);
     doc.line(m, y, pageW - m, y);
     y += 2.5;
@@ -1406,8 +1406,8 @@ export const generateCreditNotePDF = async (
 
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
-  const gold = [0, 0, 0];
-  const darkGold = [0, 0, 0];
+  const brand = [0, 0, 0];
+  const brandDark = [0, 0, 0];
   const m = 8;
 
   const setArFont = (bold = false) => {
@@ -1440,7 +1440,7 @@ export const generateCreditNotePDF = async (
   const setArabicFont = () => setArFont(false);
   const setFont = (bold = false) => setMixedFont("A", bold);
 
-  doc.setDrawColor(...darkGold);
+  doc.setDrawColor(...brandDark);
   doc.rect(2, 2, pageW - 4, pageH - 4);
 
   let y = m;
@@ -1450,7 +1450,7 @@ export const generateCreditNotePDF = async (
     if (y + requiredHeight > maxY) {
       doc.addPage();
       y = m;
-      doc.setDrawColor(...darkGold);
+      doc.setDrawColor(...brandDark);
       doc.rect(2, 2, pageW - 4, pageH - 4);
       return true;
     }
@@ -1480,7 +1480,7 @@ export const generateCreditNotePDF = async (
   }
 
   const headerHeight = 12;
-  doc.setFillColor(...gold);
+  doc.setFillColor(...brand);
   doc.rect(m, y, pageW - 2 * m, headerHeight, "F");
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(12);
@@ -1542,7 +1542,7 @@ export const generateCreditNotePDF = async (
   );
   y += 28;
 
-  doc.setDrawColor(...gold);
+  doc.setDrawColor(...brand);
   doc.setLineWidth(0.5);
   doc.line(m, y, pageW - m, y);
   y += 5;
@@ -1582,7 +1582,7 @@ export const generateCreditNotePDF = async (
   }
 
   y += 4;
-  doc.setDrawColor(...gold);
+  doc.setDrawColor(...brand);
   doc.setLineWidth(0.5);
   doc.line(m, y, pageW - m, y);
   y += 6;
@@ -1623,7 +1623,7 @@ export const generateCreditNotePDF = async (
   doc.setTextColor(0, 0, 0);
   doc.text(label("sellerSig", true), m + 8, y);
   doc.text(label("customerSig", true), pageW - m - 8, y, { align: "right" });
-  doc.setDrawColor(...gold);
+  doc.setDrawColor(...brand);
   doc.setLineWidth(0.5);
   doc.line(m + 8, y + 3, m + 50, y + 3);
   doc.line(pageW - m - 50, y + 3, pageW - m - 8, y + 3);
@@ -1634,7 +1634,7 @@ export const generateCreditNotePDF = async (
   if (branchLoc || branchPh) {
     checkPageBreak(8);
     y += 1.5;
-    doc.setDrawColor(...gold);
+    doc.setDrawColor(...brand);
     doc.setLineWidth(0.3);
     doc.line(m, y, pageW - m, y);
     y += 3.5;
