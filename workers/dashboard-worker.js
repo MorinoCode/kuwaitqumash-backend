@@ -27,20 +27,20 @@ const CACHE_TTL = {
 };
 
 /**
- * Calculate profit using buy_price_snapshot from invoice items
+ * Calculate profit using cost_per_meter_snapshot from invoice items
  */
 const calculateProfit = (items) => {
   let totalCost = 0;
   items.forEach((item) => {
-    const weight = parseFloat(item.weight || 0);
-    const buyPrice = parseFloat(item.buy_price_snapshot || 0);
-    totalCost += weight * buyPrice;
+    const meters = parseFloat(item.meters || 0);
+    const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
+    totalCost += meters * buyPrice;
   });
   return totalCost;
 };
 
 /**
- * Combine category + karat for analytics (e.g., "انگشتر ۱۸ عیار")
+ * Combine category + fabric_type for analytics (e.g., "انگشتر ۱۸ عیار")
  */
 
 
@@ -74,11 +74,11 @@ const aggregateOwnerDashboard = async (tenant) => {
 
     invoicesToday.forEach((inv) => {
       totalSalesToday += parseFloat(inv.total_amount || 0);
-      totalWeightToday += parseFloat(inv.total_weight || 0);
+      totalWeightToday += parseFloat(inv.total_meters || 0);
       inv.items.forEach((item) => {
-        const weight = parseFloat(item.weight || 0);
-        const buyPrice = parseFloat(item.buy_price_snapshot || 0);
-        totalCostToday += weight * buyPrice;
+        const meters = parseFloat(item.meters || 0);
+        const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
+        totalCostToday += meters * buyPrice;
       });
     });
 
@@ -89,14 +89,14 @@ const aggregateOwnerDashboard = async (tenant) => {
     // Total Inventory Value
     const inventoryItems = await InventoryItem.schema(schema).findAll({
       where: { status: "In Stock" },
-      attributes: ["weight", "buy_price_per_gram", "quantity"],
+      attributes: ["meters", "cost_per_meter", "quantity"],
     });
 
     let totalInventoryValue = 0;
     inventoryItems.forEach((item) => {
       const value =
-        parseFloat(item.weight || 0) *
-        parseFloat(item.buy_price_per_gram || 0) *
+        parseFloat(item.meters || 0) *
+        parseFloat(item.cost_per_meter || 0) *
         parseInt(item.quantity || 1);
       totalInventoryValue += value;
     });
@@ -163,16 +163,16 @@ const aggregateOwnerDashboard = async (tenant) => {
     const categoryKaratSales = await sequelize.query(
       `
       SELECT 
-        CONCAT(ii.category, ' ', it.karat, 'K') AS name,
+        CONCAT(ii.category, ' ', it.fabric_type, 'K') AS name,
         ii.category,
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.category, it.karat
+      GROUP BY ii.category, it.fabric_type
       ORDER BY revenue DESC
     `,
       {
@@ -181,7 +181,7 @@ const aggregateOwnerDashboard = async (tenant) => {
       },
     );
 
-    // Calculate profit for category+karat
+    // Calculate profit for category+fabric_type
     const categoryKaratWithProfit = await Promise.all(
       categoryKaratSales.map(async (item) => {
         const items = await InvoiceItem.schema(schema).findAll({
@@ -201,15 +201,15 @@ const aggregateOwnerDashboard = async (tenant) => {
               attributes: [],
             },
           ],
-          where: { karat: item.karat.replace("K", "") },
-          attributes: ["weight", "buy_price_snapshot"],
+          where: { fabric_type: item.fabric_type.replace("K", "") },
+          attributes: ["meters", "cost_per_meter_snapshot"],
         });
 
         const cost = calculateProfit(items);
         return {
           name: item.name,
           category: item.category,
-          karat: item.karat,
+          fabric_type: item.fabric_type,
           revenue: parseFloat(item.revenue || 0),
           profit: parseFloat(item.revenue || 0) - cost,
           quantity: parseInt(item.quantity || 0),
@@ -221,14 +221,14 @@ const aggregateOwnerDashboard = async (tenant) => {
     const karatSales = await sequelize.query(
       `
       SELECT 
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       WHERE inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.karat
-      ORDER BY it.karat DESC
+      GROUP BY it.fabric_type
+      ORDER BY it.fabric_type DESC
     `,
       {
         replacements: { todayStart },
@@ -243,14 +243,14 @@ const aggregateOwnerDashboard = async (tenant) => {
         ii.id,
         ii.item_name AS name,
         ii.category,
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.category, it.karat
+      GROUP BY ii.id, ii.item_name, ii.category, it.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -275,7 +275,7 @@ const aggregateOwnerDashboard = async (tenant) => {
             },
           ],
           where: { inventory_item_id: item.id },
-          attributes: ["weight", "buy_price_snapshot"],
+          attributes: ["meters", "cost_per_meter_snapshot"],
         });
 
         const cost = calculateProfit(items);
@@ -283,7 +283,7 @@ const aggregateOwnerDashboard = async (tenant) => {
           id: item.id,
           name: item.name,
           category: item.category,
-          karat: item.karat + "K",
+          fabric_type: item.fabric_type + "K",
           revenue: parseFloat(item.revenue || 0),
           profit: parseFloat(item.revenue || 0) - cost,
           quantity: parseInt(item.quantity || 0),
@@ -335,7 +335,7 @@ const aggregateOwnerDashboard = async (tenant) => {
       kpi: {
         total_sales: totalSalesToday.toFixed(3),
         net_profit: netProfitToday.toFixed(3),
-        total_weight: totalWeightToday.toFixed(3),
+        total_meters: totalWeightToday.toFixed(3),
         avg_sale_value: avgSaleValue.toFixed(3),
         total_inventory_value: totalInventoryValue.toFixed(3),
         active_branches: activeBranches,
@@ -356,7 +356,7 @@ const aggregateOwnerDashboard = async (tenant) => {
         })),
         sales_by_category_karat: categoryKaratWithProfit,
         sales_by_karat: karatSales.map((k) => ({
-          karat: k.karat + "K",
+          fabric_type: k.fabric_type + "K",
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
@@ -431,11 +431,11 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
 
     invoicesToday.forEach((inv) => {
       branchSalesToday += parseFloat(inv.total_amount || 0);
-      totalWeightToday += parseFloat(inv.total_weight || 0);
+      totalWeightToday += parseFloat(inv.total_meters || 0);
       inv.items.forEach((item) => {
-        const weight = parseFloat(item.weight || 0);
-        const buyPrice = parseFloat(item.buy_price_snapshot || 0);
-        totalCostToday += weight * buyPrice;
+        const meters = parseFloat(item.meters || 0);
+        const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
+        totalCostToday += meters * buyPrice;
       });
     });
 
@@ -478,16 +478,16 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
     const categoryKaratSales = await sequelize.query(
       `
       SELECT 
-        CONCAT(ii.category, ' ', it.karat, 'K') AS name,
+        CONCAT(ii.category, ' ', it.fabric_type, 'K') AS name,
         ii.category,
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.category, it.karat
+      GROUP BY ii.category, it.fabric_type
       ORDER BY revenue DESC
     `,
       {
@@ -500,14 +500,14 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
     const karatSales = await sequelize.query(
       `
       SELECT 
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.karat
-      ORDER BY it.karat DESC
+      GROUP BY it.fabric_type
+      ORDER BY it.fabric_type DESC
     `,
       {
         replacements: { branchId, todayStart },
@@ -595,14 +595,14 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
         ii.id,
         ii.item_name AS name,
         ii.category,
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.category, it.karat
+      GROUP BY ii.id, ii.item_name, ii.category, it.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -658,7 +658,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       kpi: {
         branch_sales: branchSalesToday.toFixed(3),
         net_profit: netProfitToday.toFixed(3),
-        total_weight: totalWeightToday.toFixed(3),
+        total_meters: totalWeightToday.toFixed(3),
         invoice_count: invoicesToday.length,
         avg_sale_value: avgSaleValue.toFixed(3),
         low_stock_count: lowStockItems.length,
@@ -678,7 +678,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
           quantity: parseInt(c.quantity || 0),
         })),
         sales_by_karat: karatSales.map((k) => ({
-          karat: k.karat + "K",
+          fabric_type: k.fabric_type + "K",
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
@@ -701,7 +701,7 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
           id: i.id,
           name: i.name,
           category: i.category,
-          karat: i.karat + "K",
+          fabric_type: i.fabric_type + "K",
           revenue: parseFloat(i.revenue || 0),
           quantity: parseInt(i.quantity || 0),
         })),
@@ -798,16 +798,16 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
     const categoryKaratSales = await sequelize.query(
       `
       SELECT 
-        CONCAT(ii.category, ' ', it.karat, 'K') AS name,
+        CONCAT(ii.category, ' ', it.fabric_type, 'K') AS name,
         ii.category,
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.category, it.karat
+      GROUP BY ii.category, it.fabric_type
       ORDER BY revenue DESC
     `,
       {
@@ -820,14 +820,14 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
     const karatSales = await sequelize.query(
       `
       SELECT 
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.karat
-      ORDER BY it.karat DESC
+      GROUP BY it.fabric_type
+      ORDER BY it.fabric_type DESC
     `,
       {
         replacements: { userId, todayStart },
@@ -842,14 +842,14 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
         ii.id,
         ii.item_name AS name,
         ii.category,
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.category, it.karat
+      GROUP BY ii.id, ii.item_name, ii.category, it.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -876,7 +876,7 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
           quantity: parseInt(c.quantity || 0),
         })),
         sales_by_karat: karatSales.map((k) => ({
-          karat: k.karat + "K",
+          fabric_type: k.fabric_type + "K",
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
@@ -884,7 +884,7 @@ const aggregateSalesmanDashboard = async (tenant, userId) => {
           id: i.id,
           name: i.name,
           category: i.category,
-          karat: i.karat + "K",
+          fabric_type: i.fabric_type + "K",
           revenue: parseFloat(i.revenue || 0),
           quantity: parseInt(i.quantity || 0),
         })),

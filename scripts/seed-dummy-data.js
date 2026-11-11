@@ -60,10 +60,10 @@ const generateRandomString = (length) => {
   return result;
 };
 
-const generateBarcode = (metal, category, karat) => {
+const generateBarcode = (metal, category, fabric_type) => {
   const metalCode = metal === 'Gold' ? 'G' : (metal === 'Silver' ? 'S' : (metal === 'Platinum' ? 'P' : 'D'));
   const catCode = category ? category.substring(0, 3).toUpperCase() : 'GEN';
-  const karatCode = (metal === 'Diamond' || !karat) ? '00' : karat.toString();
+  const karatCode = (metal === 'Diamond' || !fabric_type) ? '00' : fabric_type.toString();
   const randomPart = generateRandomString(8);
   return `${metalCode}-${catCode}-${karatCode}-${randomPart}`;
 };
@@ -72,12 +72,12 @@ const generateRFID = () => {
   return `RFID-${generateRandomString(12)}`;
 };
 
-const getBasePrice = (metal, karat) => {
+const getBasePrice = (metal, fabric_type) => {
   if (metal === 'Gold') {
-    if (karat === '24') return 22.0;
-    if (karat === '22') return 19.0;
-    if (karat === '21') return 17.5;
-    if (karat === '18') return 14.5;
+    if (fabric_type === '24') return 22.0;
+    if (fabric_type === '22') return 19.0;
+    if (fabric_type === '21') return 17.5;
+    if (fabric_type === '18') return 14.5;
   } else if (metal === 'Silver') {
     return 0.8;
   } else if (metal === 'Platinum') {
@@ -92,7 +92,7 @@ const generateStones = (count = 0) => {
   for (let i = 0; i < count; i++) {
     stones.push({
       type: faker.helpers.arrayElement(STONE_TYPES),
-      weight: parseFloat(faker.number.float({ min: 0.1, max: 2.0, precision: 0.01 }).toFixed(2)),
+      meters: parseFloat(faker.number.float({ min: 0.1, max: 2.0, precision: 0.01 }).toFixed(2)),
       hasValue: faker.datatype.boolean(),
       description: faker.lorem.sentence()
     });
@@ -288,9 +288,9 @@ async function seedDummyData() {
       for (let i = 0; i < itemCount; i++) {
         const metal = faker.helpers.arrayElement(METAL_TYPES);
         const category = faker.helpers.arrayElement(CATEGORIES[metal] || CATEGORIES.Gold);
-        const karat = metal === 'Diamond' ? null : faker.helpers.arrayElement(KARATS);
-        const weight = parseFloat(faker.number.float({ min: 1.0, max: 100.0, precision: 0.001 }).toFixed(3));
-        const basePrice = getBasePrice(metal, karat);
+        const fabric_type = metal === 'Diamond' ? null : faker.helpers.arrayElement(KARATS);
+        const meters = parseFloat(faker.number.float({ min: 1.0, max: 100.0, precision: 0.001 }).toFixed(3));
+        const basePrice = getBasePrice(metal, fabric_type);
         const buyPrice = parseFloat((basePrice - faker.number.float({ min: 0.5, max: 2.0, precision: 0.1 })).toFixed(3));
 
         const itemName = `${category} ${faker.commerce.productAdjective()}`;
@@ -303,12 +303,12 @@ async function seedDummyData() {
             InventoryItem.schema(schema),
             metal,
             category,
-            karat
+            fabric_type
           );
         } catch (error) {
           void error;
           // Fallback if barcode generation fails
-          barcode = generateBarcode(metal, category, karat);
+          barcode = generateBarcode(metal, category, fabric_type);
         }
 
         const itemData = {
@@ -317,11 +317,11 @@ async function seedDummyData() {
           item_name: itemName,
           item_name_ar: itemNameAr,
           category: category,
-          karat: karat,
-          weight: weight,
+          fabric_type: fabric_type,
+          meters: meters,
           quantity: faker.number.int({ min: 1, max: 5 }),
           min_stock_level: faker.number.int({ min: 1, max: 3 }),
-          buy_price_per_gram: buyPrice,
+          cost_per_meter: buyPrice,
           supplier_name: faker.company.name(),
           status: 'In Stock', // All items should be In Stock for testing
           branch_id: faker.helpers.arrayElement(branches).id,
@@ -332,7 +332,7 @@ async function seedDummyData() {
           description: faker.lorem.paragraph(),
           description_ar: faker.lorem.paragraph(),
           country_of_origin: faker.helpers.arrayElement(['Italy', 'Turkey', 'India', 'Kuwait', 'UAE']),
-          metal_type: metal,
+          fabric_type: metal,
           created_by: faker.helpers.arrayElement(users).id
         };
 
@@ -384,8 +384,8 @@ async function seedDummyData() {
         const invoiceItems = [];
 
         for (const inventoryItem of selectedItems) {
-          const itemWeight = parseFloat(inventoryItem.weight);
-          const sellPricePerGram = parseFloat((parseFloat(inventoryItem.buy_price_per_gram) + faker.number.float({ min: 1.0, max: 3.0, precision: 0.1 })).toFixed(3));
+          const itemWeight = parseFloat(inventoryItem.meters);
+          const sellPricePerGram = parseFloat((parseFloat(inventoryItem.cost_per_meter) + faker.number.float({ min: 1.0, max: 3.0, precision: 0.1 })).toFixed(3));
           const laborCost = parseFloat(faker.number.float({ min: 2.0, max: 8.0, precision: 0.5 }).toFixed(3));
           const itemTotal = parseFloat((itemWeight * (sellPricePerGram + laborCost)).toFixed(3));
 
@@ -397,11 +397,11 @@ async function seedDummyData() {
             inventory_item_id: inventoryItem.id,
             item_name: inventoryItem.item_name,
             item_name_ar: inventoryItem.item_name_ar,
-            karat: inventoryItem.karat || 'N/A',
-            weight: itemWeight,
-            buy_price_snapshot: parseFloat(inventoryItem.buy_price_per_gram),
-            sell_price_per_gram: sellPricePerGram,
-            labor_cost: laborCost,
+            fabric_type: inventoryItem.fabric_type || 'N/A',
+            meters: itemWeight,
+            cost_per_meter_snapshot: parseFloat(inventoryItem.cost_per_meter),
+            price_per_meter: sellPricePerGram,
+            discount: laborCost,
             total_price: itemTotal
           });
 
@@ -413,8 +413,8 @@ async function seedDummyData() {
         const invoice = await Invoice.schema(schema).create({
           invoice_number: invoiceNumber,
           customer_id: customer.id,
-          total_weight: parseFloat(totalWeight.toFixed(3)),
-          total_labor_cost: parseFloat(totalLaborCost.toFixed(3)),
+          total_meters: parseFloat(totalWeight.toFixed(3)),
+          total_discount: parseFloat(totalLaborCost.toFixed(3)),
           total_amount: parseFloat(totalAmount.toFixed(3)),
           status: 'Paid',
           notes: faker.datatype.boolean(0.3) ? faker.lorem.sentence() : null,
@@ -432,11 +432,11 @@ async function seedDummyData() {
             inventory_item_id: invItem.inventory_item_id,
             item_name: invItem.item_name,
             item_name_ar: invItem.item_name_ar,
-            karat: invItem.karat,
-            weight: invItem.weight,
-            buy_price_snapshot: invItem.buy_price_snapshot,
-            sell_price_per_gram: invItem.sell_price_per_gram,
-            labor_cost: invItem.labor_cost,
+            fabric_type: invItem.fabric_type,
+            meters: invItem.meters,
+            cost_per_meter_snapshot: invItem.cost_per_meter_snapshot,
+            price_per_meter: invItem.price_per_meter,
+            discount: invItem.discount,
             total_price: invItem.total_price
           });
         }
@@ -482,18 +482,18 @@ async function seedDummyData() {
         const customer = faker.helpers.arrayElement(customers);
         const purchaseUser = faker.helpers.arrayElement(users);
         const branch = faker.helpers.arrayElement(branches);
-        const karat = faker.helpers.arrayElement(KARATS);
-        const weight = parseFloat(faker.number.float({ min: 5.0, max: 50.0, precision: 0.001 }).toFixed(3));
-        const pricePerGram = parseFloat((getBasePrice('Gold', karat) - faker.number.float({ min: 2.0, max: 4.0, precision: 0.1 })).toFixed(3));
-        const totalAmount = parseFloat((weight * pricePerGram).toFixed(3));
+        const fabric_type = faker.helpers.arrayElement(KARATS);
+        const meters = parseFloat(faker.number.float({ min: 5.0, max: 50.0, precision: 0.001 }).toFixed(3));
+        const pricePerGram = parseFloat((getBasePrice('Gold', fabric_type) - faker.number.float({ min: 2.0, max: 4.0, precision: 0.1 })).toFixed(3));
+        const totalAmount = parseFloat((meters * pricePerGram).toFixed(3));
 
         const purchaseNumber = `OLD-${tenant.slug.toUpperCase()}-${String(i + 1).padStart(6, '0')}`;
         await OldGold.schema(schema).create({
           purchase_number: purchaseNumber,
           customer_id: customer.id,
-          description: `${karat}K Old Gold ${faker.helpers.arrayElement(['Ring', 'Necklace', 'Bracelet', 'Mixed'])}`,
-          karat: karat,
-          weight: weight,
+          description: `${fabric_type}K Old Gold ${faker.helpers.arrayElement(['Ring', 'Necklace', 'Bracelet', 'Mixed'])}`,
+          fabric_type: fabric_type,
+          meters: meters,
           price_per_gram: pricePerGram,
           total_amount: totalAmount,
           image_url: `https://example.com/oldgold/purchase_${i}.jpg`,

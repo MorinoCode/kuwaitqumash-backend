@@ -117,20 +117,20 @@ const seedDatabase = async () => {
 
       for (const cat of CATEGORIES) {
         for (let m = 0; m < 10; m++) {
-          const karat = faker.helpers.arrayElement(KARATS);
-          const weight = faker.number.float({
+          const fabric_type = faker.helpers.arrayElement(KARATS);
+          const meters = faker.number.float({
             min: 2,
             max: 50,
             precision: 0.01,
           });
-          let basePrice = karat === "24" ? 20 : karat === "21" ? 17 : 14.5;
+          let basePrice = fabric_type === "24" ? 20 : fabric_type === "21" ? 17 : 14.5;
 
           await InventoryItem.create({
             item_name: `${cat} ${faker.commerce.productAdjective()}`,
             category: cat,
-            karat: karat,
-            weight: weight,
-            buy_price_per_gram: (basePrice - 1).toFixed(3),
+            fabric_type: fabric_type,
+            meters: meters,
+            cost_per_meter: (basePrice - 1).toFixed(3),
             barcode: `${branchId}-${cat.substring(0, 2).toUpperCase()}-${faker.string.numeric(6)}`,
             branch_id: branchId,
             created_by: adminId,
@@ -159,9 +159,9 @@ const seedDatabase = async () => {
           const soldItem = await InventoryItem.create({
             item_name: `${cat} ${faker.commerce.productAdjective()}`,
             category: cat,
-            karat: k,
-            weight: w,
-            buy_price_per_gram: (p - 1.5).toFixed(3),
+            fabric_type: k,
+            meters: w,
+            cost_per_meter: (p - 1.5).toFixed(3),
             barcode: `SOLD-${branchId}-${n}-${x}-${faker.string.numeric(4)}`,
             branch_id: branchId,
             created_by: adminId,
@@ -173,10 +173,10 @@ const seedDatabase = async () => {
           soldItems.push({
             inventory_item_id: soldItem.id,
             item_name: soldItem.item_name,
-            weight: w,
-            karat: k,
+            meters: w,
+            fabric_type: k,
             price_per_gram: p,
-            labor_cost: labor,
+            discount: labor,
             subtotal: sub,
           });
 
@@ -187,7 +187,7 @@ const seedDatabase = async () => {
         const invoice = await Invoice.create({
           invoice_number: `INV-${branchId}-${Date.now()}-${n}`,
           customer_id: randomCustomer.id,
-          total_weight: totalWeight,
+          total_meters: totalWeight,
           total_amount: totalAmount,
           branch_id: branchId,
           created_by: adminId,
@@ -200,10 +200,10 @@ const seedDatabase = async () => {
             invoice_id: invoice.id,
             inventory_item_id: item.inventory_item_id,
             item_name: item.item_name,
-            karat: item.karat,
-            weight: item.weight,
-            sell_price_per_gram: item.price_per_gram,
-            labor_cost: item.labor_cost,
+            fabric_type: item.fabric_type,
+            meters: item.meters,
+            price_per_meter: item.price_per_gram,
+            discount: item.discount,
             total_price: item.subtotal,
           });
         }

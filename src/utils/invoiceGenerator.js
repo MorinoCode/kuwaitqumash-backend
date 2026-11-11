@@ -20,9 +20,9 @@ const safeNum = (v, def = 0) => {
 const safeStr = (v, def = "-") =>
   v != null && String(v).trim() !== "" ? String(v).trim() : def;
 
-// Stone weight to grams: 1 ct = 0.2 g
+// Stone meters to grams: 1 ct = 0.2 g
 const stoneWeightToGrams = (stone) => {
-  const w = Number(stone?.weight) || 0;
+  const w = Number(stone?.meters) || 0;
   return stone?.unit === "ct" ? w * 0.2 : w;
 };
 const getStonesWeightG = (stones) => {
@@ -216,7 +216,7 @@ const L = {
   totalWeightWithPurity: { en: "Total Weight", ar: "مجموع الأوزان" },
   grandTotal: { en: "Grand Total", ar: "الإجمالي" },
   stonesSection: { en: "Stones in sold items", ar: "الأحجار في الصنف المباع" },
-  stoneWeight: { en: "Stone weight", ar: "وزن الحجر" },
+  stoneWeight: { en: "Stone meters", ar: "وزن الحجر" },
   stoneValue: { en: "Stone value", ar: "قيمة الحجر" },
   netAmount: { en: "NET AMOUNT", ar: "الصافي" },
   paymentMethod: { en: "Payment Method", ar: "طريقة الدفع" },
@@ -766,8 +766,8 @@ export const generateInvoicePDF = async (
       "-"
     );
     const quantity = Math.max(1, parseInt(item.quantity, 10) || 1);
-    const itemWeight = safeNum(item.weight, 0);
-    const itemLabor = safeNum(item.labor_cost, 0);
+    const itemWeight = safeNum(item.meters, 0);
+    const itemLabor = safeNum(item.discount, 0);
     const itemPrice = safeNum(item.total_price, 0);
     const weightQty = itemWeight * quantity;
     const workmanshipPerGram =
@@ -775,8 +775,8 @@ export const generateInvoicePDF = async (
         ? (itemLabor / weightQty).toFixed(3)
         : "0.000";
     const pricePerGram =
-      item.sell_price_per_gram != null && item.sell_price_per_gram !== ""
-        ? safeNum(item.sell_price_per_gram, 0).toFixed(3)
+      item.price_per_meter != null && item.price_per_meter !== ""
+        ? safeNum(item.price_per_meter, 0).toFixed(3)
         : weightQty > 0 && itemPrice >= 0
         ? (itemPrice / weightQty).toFixed(3)
         : "0.000";
@@ -796,8 +796,8 @@ export const generateInvoicePDF = async (
       { text: safeStr(item.item_name, "-"), align: "left", font: false },
       { text: itemCode, align: "center", font: false },
       {
-        text: item.karat
-          ? `${safeStr(item.karat, "").replace(/K$/i, "")}K`
+        text: item.fabric_type
+          ? `${safeStr(item.fabric_type, "").replace(/K$/i, "")}K`
           : "-",
         align: "center",
         font: false,
@@ -911,7 +911,7 @@ export const generateInvoicePDF = async (
   doc.text(`${label("totalWeightWithPurity", true)}:`, m, y);
   doc.setTextColor(0, 0, 0);
   setFont(true);
-  const totalWeightText = `${safeNum(invoice.total_weight, 0).toFixed(2)} g`;
+  const totalWeightText = `${safeNum(invoice.total_meters, 0).toFixed(2)} g`;
   doc.text(totalWeightText, pageW - m - 2, y, { align: "right" });
   y += 4.5;
 
@@ -1583,11 +1583,11 @@ export const generateCreditNotePDF = async (
   for (const ri of items) {
     const invItem = ri.invoice_item || ri;
     const itemName = safeStr(invItem?.item_name, "-");
-    const karat = invItem?.karat ? ` ${invItem.karat}` : "";
-    const weight = invItem?.weight
-      ? ` (${parseFloat(invItem.weight).toFixed(2)}g)`
+    const fabric_type = invItem?.fabric_type ? ` ${invItem.fabric_type}` : "";
+    const meters = invItem?.meters
+      ? ` (${parseFloat(invItem.meters).toFixed(2)}g)`
       : "";
-    const desc = `${itemName}${karat}${weight}`;
+    const desc = `${itemName}${fabric_type}${meters}`;
     const qty = ri.quantity_refunded || 0;
     const amt = parseFloat(ri.amount_refunded || 0).toFixed(3);
 
@@ -1690,7 +1690,7 @@ export const generateSalesExcelBuffer = async (invoices) => {
     { header: "Customer Name", key: "cust_name", width: 25 },
     { header: "Phone", key: "phone", width: 15 },
     { header: "Civil ID", key: "civil_id", width: 18 },
-    { header: "Total Weight (g)", key: "weight", width: 18 },
+    { header: "Total Weight (g)", key: "meters", width: 18 },
     { header: "Total Amount (KD)", key: "amount", width: 18 },
     { header: "Payment Method", key: "payment", width: 25 },
   ];
@@ -1712,7 +1712,7 @@ export const generateSalesExcelBuffer = async (invoices) => {
       cust_name: (inv.customer && inv.customer.full_name) || "-",
       phone: (inv.customer && inv.customer.phone) || "-",
       civil_id: (inv.customer && inv.customer.civil_id) || "-",
-      weight: parseFloat(inv.total_weight).toFixed(3),
+      meters: parseFloat(inv.total_meters).toFixed(3),
       amount: parseFloat(inv.total_amount).toFixed(3),
       payment: paymentStr,
     });
