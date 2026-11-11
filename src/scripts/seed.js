@@ -126,8 +126,8 @@ const seedDatabase = async () => {
         const cust = await Customer.create({
           full_name: faker.person.fullName(),
           phone: faker.phone.number("965########"),
-          civil_id: faker.string.numeric(12),
-          nationality: Math.random() > 0.8 ? "Expat" : "Kuwaiti",
+          gender: Math.random() > 0.5 ? "F" : "M",
+          address: faker.location.streetAddress(),
           type: Math.random() > 0.9 ? "VIP" : "Regular",
           branch_id: branchId,
           created_by: adminId,

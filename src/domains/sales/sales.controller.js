@@ -1100,7 +1100,7 @@ export const downloadSalesExcel = async (req, res) => {
         {
           model: Customer.schema(schema),
           as: "customer",
-          attributes: ["full_name", "phone", "civil_id"],
+          attributes: ["full_name", "phone", "address", "type"],
         },
         {
           model: User.schema(schema),

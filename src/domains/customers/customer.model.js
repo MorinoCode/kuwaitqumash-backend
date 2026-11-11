@@ -15,14 +15,6 @@ const Customer = sequelize.define('Customer', {
     type: DataTypes.STRING,
     allowNull: false
   },
-  civil_id: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
-  nationality: {
-    type: DataTypes.STRING,
-    defaultValue: 'Kuwaiti'
-  },
   gender: {
     type: DataTypes.ENUM('M', 'F'),
     defaultValue: 'M'
@@ -31,25 +23,9 @@ const Customer = sequelize.define('Customer', {
     type: DataTypes.STRING,
     allowNull: true
   },
-  birth_date: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
-  expiry_date: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
   type: {
     type: DataTypes.ENUM('Regular', 'VIP', 'Wholesaler'),
     defaultValue: 'Regular'
-  },
-  id_card_front_url: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
-  id_card_back_url: {
-    type: DataTypes.STRING,
-    allowNull: true
   },
   notes: {
     type: DataTypes.TEXT,
@@ -71,7 +47,7 @@ const Customer = sequelize.define('Customer', {
     { name: 'idx_customers_branch', fields: ['branch_id'] },
     { name: 'idx_customers_created_at', fields: ['created_at'] },
     { name: 'idx_customers_phone', fields: ['phone'] },
-    { name: 'idx_customers_civil_id', fields: ['civil_id'] }
+    { name: 'idx_customers_type', fields: ['type'] }
   ]
 });
 

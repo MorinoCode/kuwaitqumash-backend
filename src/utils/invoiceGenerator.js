@@ -192,8 +192,8 @@ const L = {
   name: { en: "Name", ar: "الاسم" },
   phone: { en: "Phone", ar: "الهاتف" },
   location: { en: "Location", ar: "الموقع" },
-  civilId: { en: "Civil ID", ar: "رقم الهوية" },
-  nationality: { en: "Nationality", ar: "الجنسية" },
+  address: { en: "Address", ar: "العنوان" },
+  customerType: { en: "Customer Type", ar: "نوع العميل" },
   date: { en: "Date", ar: "التاريخ" },
   time: { en: "Time", ar: "الوقت" },
   salesman: { en: "Salesman", ar: "البائع" },
@@ -485,15 +485,14 @@ export const generateInvoicePDF = async (
   const nameLines = doc.splitTextToSize(nameText, boxWidth - padding * 2 - 2);
   customerBoxY += fieldSpacing + (nameLines.length - 1) * 3.0;
   customerBoxY += fieldSpacing;
-  customerBoxY += fieldSpacing;
-  const nationalityValue = safeStr(customer?.nationality, "-");
-  const nationalityLabel = label("nationality", true);
-  const nationalityText = `${nationalityLabel}: ${nationalityValue}`;
-  const nationalityLines = doc.splitTextToSize(
-    nationalityText,
+  const addressValue = safeStr(customer?.address, "-");
+  const addressText = `${label("address", true)}: ${addressValue}`;
+  const addressLines = doc.splitTextToSize(
+    addressText,
     boxWidth - padding * 2 - 2
   );
-  customerBoxY += fieldSpacing + (nationalityLines.length - 1) * 3.0;
+  customerBoxY += fieldSpacing + (addressLines.length - 1) * 3.0;
+  customerBoxY += fieldSpacing;
   const customerBoxHeight = customerBoxY - y + 0.8;
 
   invoiceBoxY += fieldSpacing;
@@ -576,22 +575,25 @@ export const generateInvoicePDF = async (
 
   setArabicFont();
   doc.setFontSize(labelFontSize);
-  const civilIdValue = safeStr(customer?.civil_id, "-");
-  doc.text(`${label("civilId", true)}: ${civilIdValue}`, m + padding, currentY);
-  currentY += fieldSpacing;
-
-  setArabicFont();
-  doc.setFontSize(labelFontSize);
-  const nationalityTextDisplay = `${label("nationality", true)}: ${nationalityValue}`;
-  const nationalityLinesDisplay = doc.splitTextToSize(
-    nationalityTextDisplay,
+  const addressTextDisplay = `${label("address", true)}: ${addressValue}`;
+  const addressLinesDisplay = doc.splitTextToSize(
+    addressTextDisplay,
     boxWidth - padding * 2 - 1
   );
-  nationalityLinesDisplay.forEach((line, idx) => {
+  addressLinesDisplay.forEach((line, idx) => {
     doc.text(line, m + padding, currentY + idx * 3.0, {
       maxWidth: boxWidth - padding * 2 - 1,
     });
   });
+  currentY += fieldSpacing + (addressLinesDisplay.length - 1) * 3.0;
+
+  setArabicFont();
+  doc.setFontSize(labelFontSize);
+  doc.text(
+    `${label("customerType", true)}: ${safeStr(customer?.type, "Regular")}`,
+    m + padding,
+    currentY
+  );
 
   const invoiceBoxX = m + boxWidth + 4;
   doc.setDrawColor(...brandDark);
@@ -1189,81 +1191,6 @@ export const generateInvoicePDF = async (
 
   y = currentY + 6.0;
 
-  const idFront = customer?.id_card_front_url
-    ? await getImageAsBase64(customer.id_card_front_url)
-    : null;
-  const idBack = customer?.id_card_back_url
-    ? await getImageAsBase64(customer.id_card_back_url)
-    : null;
-  const idW = 40;
-  const idH = 25;
-  const idGap = 3;
-  const idBorderWidth = 0.4;
-
-  if (idFront || idBack) {
-    const totalIdWidth =
-      (idFront ? idW : 0) +
-      (idBack ? idW : 0) +
-      (idFront && idBack ? idGap : 0);
-    const idSectionHeight = 3 + idH + 1.0;
-
-    checkPageBreak(idSectionHeight);
-
-    const startX = (pageW - totalIdWidth) / 2;
-
-    setArabicFont();
-    doc.setFontSize(6.5);
-    doc.setTextColor(0, 0, 0);
-    doc.text(label("idCards", true), pageW / 2, y, { align: "center" });
-    y += 3.5;
-
-    let currentIdX = startX;
-
-    if (idFront) {
-      const idX = currentIdX;
-      const idY = y;
-      doc.setDrawColor(...brandDark);
-      doc.setLineWidth(idBorderWidth);
-      doc.rect(
-        idX - idBorderWidth / 2,
-        idY - idBorderWidth / 2,
-        idW + idBorderWidth,
-        idH + idBorderWidth
-      );
-      try {
-        doc.addImage(idFront, "JPEG", idX, idY, idW, idH);
-      } catch (e) {
-        logger.warn("Failed to add ID front image", {
-          component: "invoiceGenerator",
-          error: e?.message,
-        });
-      }
-      currentIdX += idW + idGap;
-    }
-
-    if (idBack) {
-      const idX = currentIdX;
-      const idY = y;
-      doc.setDrawColor(...brandDark);
-      doc.setLineWidth(idBorderWidth);
-      doc.rect(
-        idX - idBorderWidth / 2,
-        idY - idBorderWidth / 2,
-        idW + idBorderWidth,
-        idH + idBorderWidth
-      );
-      try {
-        doc.addImage(idBack, "JPEG", idX, idY, idW, idH);
-      } catch (e) {
-        logger.warn("Failed to add ID back image", {
-          component: "invoiceGenerator",
-          error: e?.message,
-        });
-      }
-    }
-    y += idH + 2.0;
-  }
-
   const branchLoc = storeSettings?.branchLocation;
   const branchPh = storeSettings?.branchPhone;
   if (branchLoc || branchPh) {
@@ -1440,9 +1367,10 @@ export const generateCreditNotePDF = async (
     y + 10
   );
   doc.text(
-    `${label("civilId", true)}: ${safeStr(customer?.civil_id, "-")}`,
+    `${label("address", true)}: ${safeStr(customer?.address, "-")}`,
     m + 2,
-    y + 15
+    y + 15,
+    { maxWidth: pageW - 2 * m - 4 }
   );
   y += 28;
 
@@ -1574,7 +1502,7 @@ export const generateSalesExcelBuffer = async (invoices) => {
     { header: "Seller", key: "seller", width: 20 },
     { header: "Customer Name", key: "cust_name", width: 25 },
     { header: "Phone", key: "phone", width: 15 },
-    { header: "Civil ID", key: "civil_id", width: 18 },
+    { header: "Address", key: "address", width: 25 },
     { header: "Total Weight (g)", key: "meters", width: 18 },
     { header: "Total Amount (KD)", key: "amount", width: 18 },
     { header: "Payment Method", key: "payment", width: 25 },
@@ -1596,7 +1524,7 @@ export const generateSalesExcelBuffer = async (invoices) => {
       seller: (inv.creator && inv.creator.full_name) || "Admin",
       cust_name: (inv.customer && inv.customer.full_name) || "-",
       phone: (inv.customer && inv.customer.phone) || "-",
-      civil_id: (inv.customer && inv.customer.civil_id) || "-",
+      address: (inv.customer && inv.customer.address) || "-",
       meters: parseFloat(inv.total_meters).toFixed(3),
       amount: parseFloat(inv.total_amount).toFixed(3),
       payment: paymentStr,

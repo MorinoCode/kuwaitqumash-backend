@@ -4,100 +4,47 @@ import sequelize from "../../config/database.js";
 import InvoiceItem from "../sales/invoice-item.model.js";
 import InventoryItem from "../inventory/item.model.js";
 import { Op } from "sequelize";
-import fs from "fs";
-import sharp from "sharp";
-import OpenAI from "openai";
-import { saveImage, deleteImage } from "../../utils/fileUpload.js";
 import { normalizeToLatinDigits } from "../../utils/normalizeNumbers.js";
 import logger from "../../utils/logger.js";
 
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+const CUSTOMER_FIELDS = [
+  "full_name",
+  "phone",
+  "gender",
+  "address",
+  "type",
+  "notes",
+  "branch_id",
+];
+
+const pickCustomerFields = (body = {}) => {
+  const data = {};
+  CUSTOMER_FIELDS.forEach((field) => {
+    if (body[field] !== undefined) data[field] = body[field];
+  });
+  return data;
+};
 
 export const createCustomer = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
-    const tenantId = req.tenant.id;
 
-    const {
-      full_name,
-      phone,
-      civil_id: rawCivilId,
-      nationality,
-      address,
-      notes,
-      branch_id,
-      gender,
-      birth_date,
-      expiry_date,
-      type,
-    } = req.body;
-
-    const civil_id =
-      rawCivilId != null
-        ? normalizeToLatinDigits(String(rawCivilId).trim())
-        : rawCivilId;
-    const phoneNormalized =
-      phone != null ? normalizeToLatinDigits(String(phone)) : phone;
-
-    const existingCustomer = await Customer.schema(schema).findOne({
-      where: { civil_id: civil_id || null },
-    });
-    if (existingCustomer && civil_id) {
-      return res
-        .status(400)
-        .json({ message: "Customer with this Civil ID already exists." });
-    }
-
-    let id_card_front_url = null;
-    let id_card_back_url = null;
-
-    const store = req.tenant.slug || `tenant_${tenantId}`;
-    let customerFolder =
-      civil_id && String(civil_id).trim()
-        ? String(civil_id)
-            .replace(/[^a-zA-Z0-9_-]/g, "_")
-            .replace(/_+/g, "_")
-        : "";
-    if (!customerFolder)
-      customerFolder = `cust_${Date.now()}_${Math.round(Math.random() * 1e9)}`;
-
-    if (req.files && req.files.front_image) {
-      id_card_front_url = await saveImage(
-        req.files.front_image[0],
-        "customers",
-        customerFolder,
-        store
-      );
-    }
-    if (req.files && req.files.back_image) {
-      id_card_back_url = await saveImage(
-        req.files.back_image[0],
-        "customers",
-        customerFolder,
-        store
-      );
-    }
+    const data = pickCustomerFields(req.body);
+    data.full_name = String(data.full_name || "").trim();
+    data.phone = normalizeToLatinDigits(String(data.phone || "")).trim();
 
     const finalBranchId =
-      req.user.role === "store_owner" && branch_id
-        ? branch_id
+      req.user.role === "store_owner" && data.branch_id
+        ? data.branch_id
         : req.user.branch_id;
 
     const newCustomer = await Customer.schema(schema).create({
-      full_name,
-      phone: phoneNormalized,
-      civil_id,
-      nationality,
-      address,
-      gender,
-      birth_date,
-      expiry_date,
-      type: type || "Regular",
-      notes,
-      id_card_front_url,
-      id_card_back_url,
+      full_name: data.full_name,
+      phone: data.phone,
+      gender: data.gender || "M",
+      address: data.address || null,
+      type: data.type || "Regular",
+      notes: data.notes || null,
       branch_id: finalBranchId,
       created_by: req.user.id,
     });
@@ -136,7 +83,7 @@ export const getCustomers = async (req, res) => {
       whereClause[Op.or] = [
         { full_name: { [Op.iLike]: `%${search}%` } },
         { phone: { [Op.like]: `%${search}%` } },
-        { civil_id: { [Op.like]: `%${search}%` } },
+        { address: { [Op.iLike]: `%${search}%` } },
       ];
     }
 
@@ -149,20 +96,19 @@ export const getCustomers = async (req, res) => {
       where: whereClause,
     });
 
-    const listAttributes = [
-      "id",
-      "full_name",
-      "phone",
-      "civil_id",
-      "type",
-      "branch_id",
-      "created_at",
-      "id_card_front_url",
-      "id_card_back_url",
-    ];
     const customers = await Customer.schema(schema).findAll({
       where: whereClause,
-      attributes: listAttributes,
+      attributes: [
+        "id",
+        "full_name",
+        "phone",
+        "gender",
+        "address",
+        "type",
+        "notes",
+        "branch_id",
+        "created_at",
+      ],
       order: [["createdAt", "DESC"]],
       limit: limitNum,
       offset: offset,
@@ -216,16 +162,16 @@ export const getCustomerById = async (req, res) => {
       attributes: [
         [sequelize.fn("COUNT", sequelize.col("id")), "invoice_count"],
         [sequelize.fn("SUM", sequelize.col("total_amount")), "total_spent"],
-        [sequelize.fn("MAX", sequelize.col("createdAt")), "last_purchase"]
+        [sequelize.fn("MAX", sequelize.col("created_at")), "last_purchase"],
       ],
-      raw: true
+      raw: true,
     });
 
     const history = await Invoice.schema(schema).findAll({
       where: { customer_id: id },
       include: ["items"],
       order: [["createdAt", "DESC"]],
-      limit: 10
+      limit: 10,
     });
 
     res.json({
@@ -325,10 +271,11 @@ export const getCustomerAnalytics = async (req, res) => {
 
       inv.items.forEach((item) => {
         totalItems += parseInt(item.quantity || 1);
-        totalMeters += parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
+        totalMeters +=
+          parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
 
         const fabricType =
-      item.fabric_type || item.inventory_item?.fabric_type || "Other";
+          item.fabric_type || item.inventory_item?.fabric_type || "Other";
         if (fabricType) {
           fabricCount[fabricType] =
             (fabricCount[fabricType] || 0) + parseInt(item.quantity || 1);
@@ -342,17 +289,19 @@ export const getCustomerAnalytics = async (req, res) => {
 
         const buyPrice = parseFloat(item.buy_price_snapshot || 0);
         const sellPrice = parseFloat(item.total_price || 0);
-        const itemWeight = parseFloat(item.weight || 0);
-        totalProfit += sellPrice - buyPrice * itemWeight;
+        const itemMeters = parseFloat(item.meters || 0);
+        totalProfit += sellPrice - buyPrice * itemMeters;
       });
     });
 
-    const preferredFabric = Object.keys(fabricCount).reduce((a, b) =>
-      fabricCount[a] > fabricCount[b] ? a : b
+    const preferredFabric = Object.keys(fabricCount).reduce(
+      (a, b) => (fabricCount[a] > fabricCount[b] ? a : b),
+      Object.keys(fabricCount)[0] || null,
     );
 
-    const preferredPattern = Object.keys(patternCount).reduce((a, b) =>
-      patternCount[a] > patternCount[b] ? a : b
+    const preferredPattern = Object.keys(patternCount).reduce(
+      (a, b) => (patternCount[a] > patternCount[b] ? a : b),
+      Object.keys(patternCount)[0] || null,
     );
 
     const avgPurchaseValue = totalSpent / invoices.length;
@@ -369,8 +318,9 @@ export const getCustomerAnalytics = async (req, res) => {
         daysBetween.reduce((a, b) => a + b, 0) / daysBetween.length;
     }
 
-    const bestDayOfWeek = Object.keys(dayOfWeekCount).reduce((a, b) =>
-      dayOfWeekCount[a] > dayOfWeekCount[b] ? a : b
+    const bestDayOfWeek = Object.keys(dayOfWeekCount).reduce(
+      (a, b) => (dayOfWeekCount[a] > dayOfWeekCount[b] ? a : b),
+      Object.keys(dayOfWeekCount)[0] || null,
     );
     const dayNames = [
       "Sunday",
@@ -382,8 +332,9 @@ export const getCustomerAnalytics = async (req, res) => {
       "Saturday",
     ];
 
-    const bestMonth = Object.keys(monthCount).reduce((a, b) =>
-      monthCount[a] > monthCount[b] ? a : b
+    const bestMonth = Object.keys(monthCount).reduce(
+      (a, b) => (monthCount[a] > monthCount[b] ? a : b),
+      Object.keys(monthCount)[0] || null,
     );
     const monthNames = [
       "January",
@@ -427,7 +378,7 @@ export const getCustomerAnalytics = async (req, res) => {
       insights.push("high_value_customer");
     }
 
-    if (totalProfit / totalSpent > 0.3) {
+    if (totalSpent > 0 && totalProfit / totalSpent > 0.3) {
       insights.push("profitable_customer");
     }
 
@@ -441,7 +392,7 @@ export const getCustomerAnalytics = async (req, res) => {
 
     const holidayMonths = [10, 11, 0];
     const holidayPurchases = purchaseDates.filter((d) =>
-      holidayMonths.includes(new Date(d).getMonth())
+      holidayMonths.includes(new Date(d).getMonth()),
     ).length;
     if (holidayPurchases > purchaseDates.length * 0.4) {
       insights.push("holiday_shopper");
@@ -493,7 +444,6 @@ export const getCustomerAnalytics = async (req, res) => {
 export const updateCustomer = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
-    const tenantId = req.tenant.id;
     const { id } = req.params;
 
     const customer = await Customer.schema(schema).findByPk(id);
@@ -508,43 +458,15 @@ export const updateCustomer = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    const updateData = { ...req.body };
-    if (updateData.civil_id != null)
-      updateData.civil_id = normalizeToLatinDigits(
-        String(updateData.civil_id).trim()
-      );
-    if (updateData.phone != null)
-      updateData.phone = normalizeToLatinDigits(String(updateData.phone));
-    const store = req.tenant.slug || `tenant_${tenantId}`;
-    const customerFolder =
-      customer.civil_id && String(customer.civil_id).trim()
-        ? String(customer.civil_id)
-            .replace(/[^a-zA-Z0-9_-]/g, "_")
-            .replace(/_+/g, "_")
-        : `cust_${customer.id}`;
-
-    if (req.files && req.files.front_image) {
-      if (customer.id_card_front_url)
-        await deleteImage(customer.id_card_front_url);
-      updateData.id_card_front_url = await saveImage(
-        req.files.front_image[0],
-        "customers",
-        customerFolder,
-        store
-      );
+    const data = pickCustomerFields(req.body);
+    if (data.phone != null) {
+      data.phone = normalizeToLatinDigits(String(data.phone)).trim();
     }
-    if (req.files && req.files.back_image) {
-      if (customer.id_card_back_url)
-        await deleteImage(customer.id_card_back_url);
-      updateData.id_card_back_url = await saveImage(
-        req.files.back_image[0],
-        "customers",
-        customerFolder,
-        store
-      );
+    if (data.full_name != null) {
+      data.full_name = String(data.full_name).trim();
     }
 
-    await customer.update(updateData);
+    await customer.update(data);
     res.json({
       success: true,
       message: "Updated successfully",
@@ -588,10 +510,6 @@ export const deleteCustomer = async (req, res) => {
         .json({ message: "Cannot delete customer with purchase history." });
     }
 
-    if (customer.id_card_front_url)
-      await deleteImage(customer.id_card_front_url);
-    if (customer.id_card_back_url) await deleteImage(customer.id_card_back_url);
-
     await customer.destroy();
     res.json({ success: true, message: "Deleted successfully" });
   } catch (error) {
@@ -606,97 +524,6 @@ export const deleteCustomer = async (req, res) => {
   }
 };
 
-export const scanIDCard = async (req, res) => {
-  if (!openai) {
-    return res.status(503).json({
-      message: "ID scanning is not configured on this server.",
-    });
-  }
-
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: "No image uploaded" });
-    }
-
-    const imageMetadata = await sharp(req.file.path).metadata();
-
-    const redactWidth = Math.floor(imageMetadata.width * 0.35);
-    const redactHeight = imageMetadata.height;
-
-    const redactedBuffer = await sharp(req.file.path)
-      .rotate()
-      .composite([{
-        input: {
-          create: {
-            width: redactWidth,
-            height: redactHeight,
-            channels: 4,
-            background: { r: 0, g: 0, b: 0, alpha: 1 }
-          }
-        },
-        top: 0,
-        left: 0
-      }])
-      .jpeg({ quality: 80 })
-      .toBuffer();
-
-    const base64Image = redactedBuffer.toString("base64");
-    const dataUrl = `data:image/jpeg;base64,${base64Image}`;
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "Extract data from this ID card. If it's the FRONT, extract: 'full_name' (English), 'civil_id', 'nationality', 'gender' (M/F), 'birth_date' (YYYY-MM-DD), 'expiry_date' (YYYY-MM-DD). If it's the BACK, extract the 'address' details (Block, Street, House, etc) into a single string field named 'address'. Return strictly JSON. Use null for fields not found.",
-            },
-            {
-              type: "image_url",
-              image_url: { url: dataUrl },
-            },
-          ],
-        },
-      ],
-      max_tokens: 500,
-    });
-
-    const content = response.choices[0].message.content;
-    const jsonString = content
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim();
-
-    let data;
-    try {
-      data = JSON.parse(jsonString);
-    } catch (e) {
-      void e;
-      return res.status(500).json({ message: "Failed to parse AI response" });
-    }
-
-    try {
-      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-    } catch (e) {
-      void e;
-    }
-
-    res.json({
-      success: true,
-      data,
-    });
-  } catch (error) {
-    logger.error("AI scan error", {
-      component: "customers",
-      error: error?.message,
-      stack: error?.stack,
-    });
-    res.status(500).json({ message: "AI Scan failed", error: error?.message });
-  }
-};
-
 export const getCustomerHistory = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
@@ -707,12 +534,14 @@ export const getCustomerHistory = async (req, res) => {
     const limitNum = Math.min(parseInt(limit, 10) || 20, 100);
     const offset = (pageNum - 1) * limitNum;
 
-    const { count, rows: history } = await Invoice.schema(schema).findAndCountAll({
+    const { count, rows: history } = await Invoice.schema(
+      schema,
+    ).findAndCountAll({
       where: { customer_id: id },
       include: ["items"],
       order: [["createdAt", "DESC"]],
       limit: limitNum,
-      offset: offset
+      offset: offset,
     });
 
     res.json({
@@ -722,8 +551,8 @@ export const getCustomerHistory = async (req, res) => {
         currentPage: pageNum,
         totalPages: Math.ceil(count / limitNum),
         totalItems: count,
-        itemsPerPage: limitNum
-      }
+        itemsPerPage: limitNum,
+      },
     });
   } catch (error) {
     logger.error("Customer Error", {

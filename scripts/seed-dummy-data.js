@@ -322,21 +322,9 @@ async function seedDummyData() {
         const customer = await Customer.schema(schema).create({
           full_name: faker.person.fullName(),
           phone: faker.phone.number('965########'),
-          civil_id: faker.string.numeric(12),
-          nationality: faker.helpers.arrayElement(NATIONALITIES),
           gender,
           address: faker.location.streetAddress(),
-          birth_date: faker.date
-            .birthdate({ min: 18, max: 80, mode: 'age' })
-            .toISOString()
-            .split('T')[0],
-          expiry_date: faker.date
-            .future({ years: 5 })
-            .toISOString()
-            .split('T')[0],
           type: faker.helpers.arrayElement(CUSTOMER_TYPES),
-          id_card_front_url: `https://example.com/id/front_${i}.jpg`,
-          id_card_back_url: `https://example.com/id/back_${i}.jpg`,
           notes: faker.datatype.boolean() ? faker.lorem.sentence() : null,
           branch_id: faker.helpers.arrayElement(branches).id,
           created_by: faker.helpers.arrayElement(users).id

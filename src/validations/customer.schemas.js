@@ -6,27 +6,19 @@ const gender = z.enum(['M', 'F']);
 export const createCustomerBody = z.object({
   full_name: z.string().min(1, 'Full name is required.').max(255).trim(),
   phone: z.string().min(1, 'Phone is required.').max(50).trim(),
-  civil_id: z.string().max(50).trim().optional().nullable(),
-  nationality: z.string().max(100).optional(),
   address: z.string().max(500).optional().nullable(),
   notes: z.string().max(2000).optional().nullable(),
   branch_id: z.coerce.number().int().positive().optional().nullable(),
   gender: gender.optional(),
-  birth_date: z.string().max(20).optional().nullable(),
-  expiry_date: z.string().max(20).optional().nullable(),
   type: customerType.optional(),
 }).strict();
 
 export const updateCustomerBody = z.object({
   full_name: z.string().min(1).max(255).trim().optional(),
   phone: z.string().min(1).max(50).trim().optional(),
-  civil_id: z.string().max(50).trim().optional().nullable(),
-  nationality: z.string().max(100).optional(),
   address: z.string().max(500).optional().nullable(),
   notes: z.string().max(2000).optional().nullable(),
   branch_id: z.coerce.number().int().positive().optional().nullable(),
   gender: gender.optional(),
-  birth_date: z.string().max(20).optional().nullable(),
-  expiry_date: z.string().max(20).optional().nullable(),
   type: customerType.optional(),
 }).strict();

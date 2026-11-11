@@ -36,7 +36,7 @@ const getIndexDefinitions = () => [
     columns: ["created_at"],
   },
   { name: "idx_customers_phone", table: "customers", columns: ["phone"] },
-  { name: "idx_customers_civil_id", table: "customers", columns: ["civil_id"] },
+  { name: "idx_customers_type", table: "customers", columns: ["type"] },
 
   { name: "idx_invoices_branch", table: "invoices", columns: ["branch_id"] },
   {
