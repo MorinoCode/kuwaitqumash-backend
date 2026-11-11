@@ -343,7 +343,7 @@ export const getOwnerDashboard = async (req, res) => {
       attributes: [
         "id",
         "item_name",
-        "category",
+        "pattern",
         "quantity",
         "min_stock_level",
       ],
@@ -531,7 +531,7 @@ export const getManagerDashboard = async (req, res) => {
         attributes: [
           "id",
           "item_name",
-          "category",
+          "pattern",
           "quantity",
           "min_stock_level",
         ],
@@ -1382,7 +1382,7 @@ export const getDashboardAnalytics = async (req, res) => {
           type: sequelize.QueryTypes.SELECT,
         });
 
-        // Optimize: Fetch all category items in one query
+        // Optimize: fetch all pattern items in one query
         const allCategoryItems = await InvoiceItem.schema(schema).findAll({
           include: [
             {
@@ -1393,17 +1393,17 @@ export const getDashboardAnalytics = async (req, res) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["cost_per_meter", "category"],
+              attributes: ["cost_per_meter", "pattern"],
             },
           ],
           attributes: ["total_price", "meters", "quantity"],
         });
 
-        // Group items by category
+        // Group items by pattern
         const itemsByCategory = {};
         allCategoryItems.forEach((item) => {
           const pattern = item.inventory_item?.pattern;
-          if (category) {
+          if (pattern) {
             if (!itemsByCategory[pattern]) {
               itemsByCategory[pattern] = [];
             }

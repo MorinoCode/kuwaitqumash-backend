@@ -617,7 +617,7 @@ export const getStaffAnalytics = async (req, res) => {
 
         // Category preference
         const pattern = item.inventory_item?.pattern;
-        if (category) {
+        if (pattern) {
           patternCount[pattern] =
             (patternCount[pattern] || 0) + parseInt(item.quantity || 1);
         }
