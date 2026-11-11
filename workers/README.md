@@ -9,7 +9,7 @@
 - ✅ Caching در Redis با TTL مناسب
 - ✅ Fallback به Database در صورت عدم دسترسی به Redis
 - ✅ استفاده از `buy_price_snapshot` برای محاسبه دقیق profit
-- ✅ ترکیب Category + Karat در analytics (مثلاً "انگشتر ۱۸ عیار")
+- ✅ ترکیب Category + Karat در analytics (مثلاً "انگشتر ۱۸ نوع پارچه")
 
 ## نصب و راه‌اندازی
 
