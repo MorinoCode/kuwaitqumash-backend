@@ -29,19 +29,13 @@ router.post('/',
     // Convert FormData strings to proper types for validation
     const body = { ...req.body };
     // Convert numeric fields (only fields that are defined as number in schema)
-    if (body.weight) body.weight = body.weight ? parseFloat(body.weight) : null;
-    if (body.purchase_price) body.purchase_price = body.purchase_price ? parseFloat(body.purchase_price) : null;
-    if (body.selling_price) body.selling_price = body.selling_price ? parseFloat(body.selling_price) : null;
     if (body.branch_id) body.branch_id = body.branch_id ? parseInt(body.branch_id, 10) : null;
-    // karat is defined as string in schema, so keep it as string
     // Convert empty strings to null
-    if (body.karat === '') body.karat = null;
+    if (body.fabric_type === '') body.fabric_type = null;
     if (body.barcode === '') body.barcode = null;
     if (body.description === '') body.description = null;
-    if (body.notes === '') body.notes = null;
     if (body.item_name === '') body.item_name = null;
     if (body.item_name_ar === '') body.item_name_ar = null;
-    if (body.subcategory === '') body.subcategory = null;
     if (body.country_of_origin === '') body.country_of_origin = null;
     req.body = body;
     validate(addItemBody)(req, res, next);
@@ -63,19 +57,13 @@ router.put('/:id',
     // Convert FormData strings to proper types for validation
     const body = { ...req.body };
     // Convert numeric fields (only fields that are defined as number in schema)
-    if (body.weight) body.weight = body.weight ? parseFloat(body.weight) : null;
-    if (body.purchase_price) body.purchase_price = body.purchase_price ? parseFloat(body.purchase_price) : null;
-    if (body.selling_price) body.selling_price = body.selling_price ? parseFloat(body.selling_price) : null;
     if (body.branch_id) body.branch_id = body.branch_id ? parseInt(body.branch_id, 10) : null;
-    // karat is defined as string in schema, so keep it as string
     // Convert empty strings to null
-    if (body.karat === '') body.karat = null;
+    if (body.fabric_type === '') body.fabric_type = null;
     if (body.barcode === '') body.barcode = null;
     if (body.description === '') body.description = null;
-    if (body.notes === '') body.notes = null;
     if (body.item_name === '') body.item_name = null;
     if (body.item_name_ar === '') body.item_name_ar = null;
-    if (body.subcategory === '') body.subcategory = null;
     if (body.country_of_origin === '') body.country_of_origin = null;
     req.body = body;
     validate(updateItemBody)(req, res, next);

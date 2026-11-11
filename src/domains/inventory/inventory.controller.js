@@ -31,20 +31,12 @@ export const addItem = async (req, res) => {
       country_of_origin,
       description,
       description_ar,
-      karat,
       length_m,
       quantity,
       cost_per_meter,
       price_per_meter,
       branch_id,
       min_stock_level,
-      // Diamond fields
-      diamond_carat,
-      diamond_cut,
-      diamond_color,
-      diamond_clarity,
-      diamond_shape,
-      diamond_setting,
       // Stones
       stones,
     } = req.body;
@@ -55,7 +47,7 @@ export const addItem = async (req, res) => {
       typeof fabric_type !== "string" ||
       fabric_type.trim().length === 0
     ) {
-      return res.status(400).json({ message: "Metal type is required." });
+      return res.status(400).json({ message: "Fabric type is required." });
     }
 
     // Item name is now optional - can be generated from pattern
@@ -67,57 +59,7 @@ export const addItem = async (req, res) => {
       return res.status(400).json({ message: "Category is required." });
     }
 
-    // Validate: pattern is required for Gold, Silver, Platinum (contains karat)
-    // For Watch, Diamond, and custom metals, pattern is optional
-    const standardMetals = ["Gold", "Silver", "Platinum"];
-    if (standardMetals.includes(fabric_type) && !pattern) {
-      return res.status(400).json({
-        message:
-          "Subcategory is required for Gold, Silver, and Platinum items.",
-      });
-    }
-
-    const parsedLength = parseFloat(
-      normalizeToLatinDigits(String(length_m ?? ""))
-    );
-    if (isNaN(parsedLength) || !parsedLength || parsedLength <= 0) {
-      return res
-        .status(400)
-        .json({ message: "Valid length_m (greater than 0) is required." });
-    }
-
-    const parsedBuyPrice = parseFloat(
-      normalizeToLatinDigits(String(cost_per_meter ?? ""))
-    );
-    if (isNaN(parsedBuyPrice) || parsedBuyPrice < 0) {
-      return res
-        .status(400)
-        .json({ message: "Valid buy price per gram is required." });
-    }
-
-    // price_per_meter is optional - will be entered manually on Sales page
-
-    // Extract karat from pattern if not provided directly (only for Gold, Silver, Platinum)
-    let finalKarat = karat;
-    if (fabric_type !== "Watch" && fabric_type !== "Diamond") {
-      if (!finalKarat && pattern && standardMetals.includes(fabric_type)) {
-        // Extract karat from pattern (e.g., "Ring 18K" or "Ring ١٨K" -> "18")
-        const subcategoryLatin = normalizeToLatinDigits(pattern);
-        const karatMatch = subcategoryLatin.match(/(\d+)[K]?$/);
-        finalKarat = karatMatch ? karatMatch[1] : null;
-      }
-
-      // Validate: karat is required for Gold, Silver, Platinum but not for Diamond, Watch, or custom metals
-      if (standardMetals.includes(fabric_type) && !finalKarat) {
-        return res.status(400).json({
-          message:
-            'Karat is required for Gold, Silver, and Platinum items. Please ensure pattern contains karat (e.g., "Ring 18K").',
-        });
-      }
-    } else {
-      // Watch and Diamond don't have karat
-      finalKarat = null;
-    }
+    // Pattern (design) is optional for fabric items.
 
     // Generate item_name from pattern if not provided
     let finalItemName = item_name;
@@ -158,7 +100,7 @@ export const addItem = async (req, res) => {
       InventoryItem.schema(schema),
       fabric_type,
       category,
-      karat
+      null
     );
 
     const storageFolder = `${tenantId}_${category || "general"}`;
@@ -177,10 +119,6 @@ export const addItem = async (req, res) => {
       country_of_origin: country_of_origin ? country_of_origin.trim() : null,
       description: sanitizedDescription,
       description_ar: sanitizedDescriptionAr,
-      karat:
-        fabric_type === "Diamond" || fabric_type === "Watch"
-          ? null
-          : finalKarat || null,
       length_m: parsedLength,
       quantity:
         parseInt(normalizeToLatinDigits(String(quantity ?? "")), 10) || 1,
@@ -189,9 +127,6 @@ export const addItem = async (req, res) => {
         2,
       cost_per_meter: parsedBuyPrice,
       price_per_meter:
-        standardMetals.includes(fabric_type) &&
-        fabric_type !== "Watch" &&
-        fabric_type !== "Diamond" &&
         price_per_meter
           ? (() => {
               const parsed = parseFloat(
@@ -205,48 +140,6 @@ export const addItem = async (req, res) => {
       created_by: req.user.id,
       images: uploadedImages,
       status: "In Stock",
-      // Diamond fields
-      diamond_carat:
-        fabric_type === "Diamond" && diamond_carat
-          ? (() => {
-              const parsed = parseFloat(
-                normalizeToLatinDigits(String(diamond_carat))
-              );
-              return isNaN(parsed) || parsed < 0 ? null : parsed;
-            })()
-          : null,
-      diamond_cut:
-        fabric_type === "Diamond"
-          ? diamond_cut
-            ? diamond_cut.trim()
-            : null
-          : null,
-      diamond_color:
-        fabric_type === "Diamond"
-          ? diamond_color
-            ? diamond_color.trim()
-            : null
-          : null,
-      diamond_clarity:
-        fabric_type === "Diamond"
-          ? diamond_clarity
-            ? diamond_clarity.trim()
-            : null
-          : null,
-      diamond_shape:
-        fabric_type === "Diamond"
-          ? diamond_shape
-            ? diamond_shape.trim()
-            : null
-          : null,
-      diamond_setting:
-        fabric_type === "Diamond"
-          ? diamond_setting
-            ? diamond_setting.trim()
-            : null
-          : null,
-      // Stones (for Gold, Silver, Platinum with stones)
-      // Watch and Diamond don't have stones
       stones:
         fabric_type !== "Watch" && fabric_type !== "Diamond" ? parsedStones : [],
     });
@@ -258,8 +151,8 @@ export const addItem = async (req, res) => {
       item_name: newItem.item_name,
       category: newItem.category,
       pattern: newItem.pattern,
-      fabric_type: newItem.fabric_type,
-      karat: newItem.karat,
+      fabric_type: newItem.fabric_type || "",
+      color: newItem.color || null,
       length_m: newItem.length_m,
       quantity: newItem.quantity,
       status: newItem.status,
@@ -296,7 +189,6 @@ export const getInventory = async (req, res) => {
       fabric_type,
       category,
       country_of_origin,
-      karat,
       status: statusFilter,
       page = 1,
       limit = 50,
@@ -338,7 +230,7 @@ export const getInventory = async (req, res) => {
     if (category && category !== "All") whereClause.category = category;
     if (country_of_origin && country_of_origin !== "All")
       whereClause.country_of_origin = country_of_origin;
-    if (karat && karat !== "All") whereClause.karat = karat;
+    if (fabricType && fabricType !== "All") whereClause.fabric_type = fabricType;
 
     if (search) {
       // Optimized search: Use prefix matching first (faster with text_pattern_ops indexes)
@@ -593,20 +485,12 @@ export const updateItem = async (req, res) => {
       country_of_origin,
       description,
       description_ar,
-      karat,
       length_m,
       quantity,
       cost_per_meter,
       supplier_name,
       min_stock_level,
       status,
-      // Diamond fields
-      diamond_carat,
-      diamond_cut,
-      diamond_color,
-      diamond_clarity,
-      diamond_shape,
-      diamond_setting,
       // Stones
       stones,
     } = req.body;
@@ -619,19 +503,12 @@ export const updateItem = async (req, res) => {
       country_of_origin,
       description,
       description_ar,
-      karat,
       length_m,
       quantity,
       cost_per_meter,
       supplier_name,
       min_stock_level,
       status,
-      diamond_carat,
-      diamond_cut,
-      diamond_color,
-      diamond_clarity,
-      diamond_shape,
-      diamond_setting,
     };
 
     // Parse stones if it's a string
@@ -646,55 +523,6 @@ export const updateItem = async (req, res) => {
         }
         updateData.stones = [];
       }
-    }
-
-    // Handle metal type changes - clear irrelevant fields
-    if (fabric_type && fabric_type !== item.fabric_type) {
-      if (fabric_type === "Diamond" || fabric_type === "Watch") {
-        updateData.karat = null;
-        updateData.price_per_meter = null;
-        if (fabric_type === "Watch") {
-          // Watch doesn't have diamond fields
-          updateData.diamond_carat = null;
-          updateData.diamond_cut = null;
-          updateData.diamond_color = null;
-          updateData.diamond_clarity = null;
-          updateData.diamond_shape = null;
-          updateData.diamond_setting = null;
-        }
-      } else {
-        updateData.diamond_carat = null;
-        updateData.diamond_cut = null;
-        updateData.diamond_color = null;
-        updateData.diamond_clarity = null;
-        updateData.diamond_shape = null;
-        updateData.diamond_setting = null;
-      }
-    } else if (
-      updateData.fabric_type === "Diamond" ||
-      updateData.fabric_type === "Watch"
-    ) {
-      updateData.karat = null;
-      updateData.price_per_meter = null;
-      if (updateData.fabric_type === "Watch") {
-        updateData.diamond_carat = null;
-        updateData.diamond_cut = null;
-        updateData.diamond_color = null;
-        updateData.diamond_clarity = null;
-        updateData.diamond_shape = null;
-        updateData.diamond_setting = null;
-      }
-    } else if (
-      updateData.fabric_type &&
-      updateData.fabric_type !== "Diamond" &&
-      updateData.fabric_type !== "Watch"
-    ) {
-      updateData.diamond_carat = null;
-      updateData.diamond_cut = null;
-      updateData.diamond_color = null;
-      updateData.diamond_clarity = null;
-      updateData.diamond_shape = null;
-      updateData.diamond_setting = null;
     }
 
     // Sanitize string inputs

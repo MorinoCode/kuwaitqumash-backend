@@ -283,7 +283,7 @@ export const getCustomerAnalytics = async (req, res) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["category", "karat"],
+              attributes: ["fabric_type"],
             },
           ],
         },
@@ -308,9 +308,9 @@ export const getCustomerAnalytics = async (req, res) => {
     // Calculate analytics
     let totalSpent = 0;
     let totalItems = 0;
-    let totalWeight = 0;
+    let totalMeters = 0;
     let totalProfit = 0;
-    const karatCount = {};
+    const fabricCount = {};
     const categoryCount = {};
     const purchaseDates = [];
     const purchaseAmounts = [];
@@ -332,13 +332,14 @@ export const getCustomerAnalytics = async (req, res) => {
 
       inv.items.forEach((item) => {
         totalItems += parseInt(item.quantity || 1);
-        totalWeight += parseFloat(item.weight || 0);
+        totalMeters += parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
 
         // Karat preference
-        const karat = item.karat || item.inventory_item?.karat;
-        if (karat) {
-          karatCount[karat] =
-            (karatCount[karat] || 0) + parseInt(item.quantity || 1);
+        const fabricType =
+      item.fabric_type || item.inventory_item?.fabric_type || "Other";
+        if (fabricType) {
+          fabricCount[fabricType] =
+            (fabricCount[fabricType] || 0) + parseInt(item.quantity || 1);
         }
 
         // Category preference
@@ -356,9 +357,9 @@ export const getCustomerAnalytics = async (req, res) => {
       });
     });
 
-    // Find preferred karat
-    const preferredKarat = Object.keys(karatCount).reduce((a, b) =>
-      karatCount[a] > karatCount[b] ? a : b
+    // Find preferred fabric type
+    const preferredFabric = Object.keys(fabricCount).reduce((a, b) =>
+      fabricCount[a] > fabricCount[b] ? a : b
     );
 
     // Find preferred category
@@ -432,8 +433,8 @@ export const getCustomerAnalytics = async (req, res) => {
       insights.push("frequent_buyer");
     }
 
-    if (preferredKarat) {
-      insights.push(`prefers_${preferredKarat}k_items`);
+    if (preferredFabric) {
+      insights.push(`prefers_${preferredFabric}_items`);
     }
 
     if (avgDaysBetweenPurchases > 0 && avgDaysBetweenPurchases < 30) {
@@ -473,15 +474,15 @@ export const getCustomerAnalytics = async (req, res) => {
           customer_type: customerType,
           insights: insights,
           preferences: {
-            preferred_karat: preferredKarat ? `${preferredKarat}K` : null,
+            preferred_fabric_type: preferredFabric ? preferredFabric : null,
             preferred_category: preferredCategory || null,
-            karat_distribution: karatCount,
+            fabric_distribution: fabricCount,
             category_distribution: categoryCount,
           },
           behavior: {
             total_spent: totalSpent.toFixed(3),
             total_items: totalItems,
-            total_weight: totalWeight.toFixed(2),
+            total_meters: totalMeters.toFixed(2),
             total_profit: totalProfit.toFixed(3),
             avg_purchase_value: avgPurchaseValue.toFixed(3),
             avg_days_between_purchases: Math.round(avgDaysBetweenPurchases),

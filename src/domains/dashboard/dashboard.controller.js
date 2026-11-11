@@ -251,7 +251,7 @@ export const getOwnerDashboard = async (req, res) => {
     const categoryKaratWithProfit = categoryKaratSales.map((item) => ({
       name: item.name,
       category: item.category,
-      karat: item.karat || null,
+      fabric_type: item.fabric_type || null,
       revenue: parseFloat(item.revenue || 0),
       profit: parseFloat(item.revenue || 0) - parseFloat(item.cost || 0),
       quantity: parseInt(item.quantity || 0),
@@ -318,7 +318,7 @@ export const getOwnerDashboard = async (req, res) => {
       id: item.id,
       name: item.name,
       category: item.category,
-      karat: item.karat ? item.karat + "K" : null,
+      fabric_type: item.fabric_type || null,
       revenue: parseFloat(item.revenue || 0),
       profit: parseFloat(item.revenue || 0) - parseFloat(item.cost || 0),
       quantity: parseInt(item.quantity || 0),
@@ -393,7 +393,7 @@ export const getOwnerDashboard = async (req, res) => {
         })),
         sales_by_category_karat: categoryKaratWithProfit,
         sales_by_karat: karatSales.map((k) => ({
-          karat: k.fabric_type || k.karat || null,
+          fabric_type: k.fabric_type || null,
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
@@ -823,7 +823,7 @@ export const getManagerDashboard = async (req, res) => {
           quantity: parseInt(c.quantity || 0),
         })),
         salesByKarat: karatSales.map((k) => ({
-          karat: k.fabric_type || k.karat || "-",
+          fabric_type: k.fabric_type || "-",
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
@@ -846,7 +846,7 @@ export const getManagerDashboard = async (req, res) => {
           id: i.id,
           name: i.name,
           category: i.category,
-          karat: i.karat + "K",
+          fabric_type: i.fabric_type || null,
           revenue: parseFloat(i.revenue || 0),
           quantity: parseInt(i.quantity || 0),
         })),
@@ -1059,7 +1059,7 @@ export const getSalesmanDashboard = async (req, res) => {
           quantity: parseInt(c.quantity || 0),
         })),
         sales_by_karat: karatSales.map((k) => ({
-          karat: k.fabric_type || k.karat || null,
+          fabric_type: k.fabric_type || null,
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
@@ -1067,7 +1067,7 @@ export const getSalesmanDashboard = async (req, res) => {
           id: i.id,
           name: i.name,
           category: i.category,
-          karat: i.karat ? i.karat + "K" : null,
+          fabric_type: i.fabric_type || null,
           revenue: parseFloat(i.revenue || 0),
           quantity: parseInt(i.quantity || 0),
         })),
@@ -1484,69 +1484,47 @@ export const getDashboardAnalytics = async (req, res) => {
           GROUP BY it.fabric_type 
           ORDER BY it.fabric_type DESC`;
 
-        const karatRaw = await sequelize.query(karatQuery, {
+        const fabricRaw = await sequelize.query(karatQuery, {
           replacements: karatReplacements,
           type: sequelize.QueryTypes.SELECT,
         });
 
         // Optimize: Fetch all karat items in one query
-        const allKaratItems = await InvoiceItem.schema(schema).findAll({
+        const allFabricItems = await InvoiceItem.schema(schema).findAll({
           include: [
-            {
-              model: Invoice.schema(schema),
-              where: combinedFilter,
-              attributes: [],
-            },
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["cost_per_meter"],
+              attributes: ["cost_per_meter", "fabric_type"],
             },
           ],
-          where: {
-            karat: {
-              [Op.in]: karatRaw.map((k) => k.karat),
-            },
-          },
-          attributes: ["total_price", "weight", "karat"],
+          attributes: ["total_price", "meters"],
         });
 
-        // Group items by karat
-        const itemsByKarat = {};
-        allKaratItems.forEach((item) => {
-          const karat = item.karat;
-          if (karat) {
-            if (!itemsByKarat[karat]) {
-              itemsByKarat[karat] = [];
-            }
-            itemsByKarat[karat].push(item);
-          }
+        // Group sold lines by fabric type
+        const itemsByFabric = {};
+        allFabricItems.forEach((item) => {
+          const fabricKey = item.inventory_item?.fabric_type || "Other";
+          if (!itemsByFabric[fabricKey]) itemsByFabric[fabricKey] = [];
+          itemsByFabric[fabricKey].push(item);
         });
 
-        const karatDistribution = karatRaw.map((karat) => {
-          const karatItems = itemsByKarat[karat.karat] || [];
-          let karatCost = 0;
-          karatItems.forEach((item) => {
-            // For Watch and Diamond, use cost_per_meter as total (not per gram * weight)
-            const metalType = item.inventory_item?.fabric_type;
-            if (metalType === "Watch" || metalType === "Diamond") {
-              karatCost += parseFloat(
-                item.inventory_item?.cost_per_meter || 0,
-              );
-            } else {
-              // For Gold/Silver/Platinum, use cost_per_meter * weight
-              karatCost +=
-                parseFloat(item.inventory_item?.cost_per_meter || 0) *
-                parseFloat(item.meters);
-            }
+        const karatDistribution = fabricRaw.map((row) => {
+          const fabricKey = row.fabric_type || "Other";
+          const fabricItems = itemsByFabric[fabricKey] || [];
+          let fabricCost = 0;
+          fabricItems.forEach((item) => {
+            fabricCost +=
+              parseFloat(item.inventory_item?.cost_per_meter || 0) *
+              (parseFloat(item.meters) || 0);
           });
 
           return {
-            karat: karat.karat + "K",
-            revenue: parseFloat(karat.revenue) || 0,
-            profit: (parseFloat(karat.revenue) || 0) - karatCost,
-            quantity: parseInt(karat.quantity) || 0,
-            weight: parseFloat(karat.meters ?? karat.weight) || 0,
+            fabric_type: fabricKey,
+            revenue: parseFloat(row.revenue) || 0,
+            profit: (parseFloat(row.revenue) || 0) - fabricCost,
+            quantity: parseInt(row.quantity) || 0,
+            meters: parseFloat(row.meters) || 0,
           };
         });
 
@@ -1633,7 +1611,7 @@ export const getDashboardAnalytics = async (req, res) => {
           charts: {
             sales_trend: salesTrendWithProfit,
             category_distribution: categoryDistribution,
-            karat_distribution: karatDistribution,
+            fabric_distribution: karatDistribution,
             branch_performance: branchPerformance,
           },
         };
@@ -1979,7 +1957,7 @@ export const getTopItems = async (req, res) => {
         id: item.id,
         name: item.name,
         category: item.category,
-        karat: item.karat ? item.karat + "K" : null,
+        fabric_type: item.fabric_type || null,
         revenue: parseFloat(item.revenue) || 0,
         profit: (parseFloat(item.revenue) || 0) - cost,
         quantity: parseInt(item.quantity) || 0,

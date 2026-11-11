@@ -14,11 +14,10 @@ const CustomInventoryOption = sequelize.define(
       allowNull: false,
       validate: { isIn: [["metal", "category", "subcategory"]] },
     },
-    metal_type: {
+    fabric_type: {
       type: DataTypes.STRING,
-      allowNull: true, // null for metal type itself, required for category and subcategory
-      comment:
-        "The metal type this option belongs to (for category/subcategory)",
+      allowNull: true, // null for the fabric type itself, required for category/pattern
+      comment: "The fabric type this option belongs to (for category/pattern)",
     },
     category: {
       type: DataTypes.STRING,
@@ -47,18 +46,18 @@ const CustomInventoryOption = sequelize.define(
     timestamps: true,
     indexes: [
       {
-        name: "idx_custom_option_type_metal",
-        fields: ["type", "metal_type"],
+        name: "idx_custom_option_type_fabric",
+        fields: ["type", "fabric_type"],
         unique: false,
       },
       {
         name: "idx_custom_option_type_category",
-        fields: ["type", "metal_type", "category"],
+        fields: ["type", "fabric_type", "category"],
         unique: false,
       },
       {
         name: "idx_custom_option_unique",
-        fields: ["type", "metal_type", "category", "name"],
+        fields: ["type", "fabric_type", "category", "name"],
         unique: true,
       },
     ],

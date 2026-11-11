@@ -25,9 +25,9 @@ const getIndexDefinitions = () => [
     columns: ["branch_id"],
   },
   {
-    name: "idx_inventory_metal_type",
+    name: "idx_inventory_fabric_type",
     table: "inventory_items",
-    columns: ["metal_type"],
+    columns: ["fabric_type"],
   },
   {
     name: "idx_inventory_category",
@@ -78,14 +78,14 @@ const getIndexDefinitions = () => [
 
   // custom_inventory_options - matching custom-option.model.js
   {
-    name: "idx_custom_option_type_metal",
+    name: "idx_custom_option_type_fabric",
     table: "custom_inventory_options",
-    columns: ["type", "metal_type"],
+    columns: ["type", "fabric_type"],
   },
   {
     name: "idx_custom_option_type_category",
     table: "custom_inventory_options",
-    columns: ["type", "metal_type", "category"],
+    columns: ["type", "fabric_type", "category"],
   },
 ];
 
