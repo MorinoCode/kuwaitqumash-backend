@@ -83,35 +83,78 @@ export const getOwnerDashboard = async (req, res) => {
     });
 
     let totalSalesToday = 0;
-    let totalWeightToday = 0;
+    let totalMetersToday = 0;
     let totalCostToday = 0;
+    const fabricTotals = new Map();
 
     invoicesToday.forEach((inv) => {
       totalSalesToday += parseFloat(inv.total_amount || 0);
-      totalWeightToday += parseFloat(inv.total_weight || 0);
+      totalMetersToday += parseFloat(inv.total_meters || 0);
 
       inv.items.forEach((item) => {
-        const itemWeight = parseFloat(item.weight || 0);
-        const buyPrice = parseFloat(item.buy_price_snapshot || 0);
-        totalCostToday += itemWeight * buyPrice;
+        const lineMeters =
+          parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
+        const costPerMeter = parseFloat(item.cost_per_meter_snapshot || 0);
+        const lineRevenue = parseFloat(item.total_price || 0);
+        totalCostToday += lineMeters * costPerMeter;
+
+        const key = item.fabric_type || "Other";
+        const current = fabricTotals.get(key) || {
+          name: key,
+          meters: 0,
+          revenue: 0,
+          profit: 0,
+        };
+        current.meters += lineMeters;
+        current.revenue += lineRevenue;
+        current.profit += lineRevenue - lineMeters * costPerMeter;
+        fabricTotals.set(key, current);
       });
     });
+
+    const topFabrics = Array.from(fabricTotals.values())
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5)
+      .map((fabric) => ({
+        name: fabric.name,
+        fabric_type: fabric.name,
+        meters: Math.round(fabric.meters * 1000) / 1000,
+        revenue: Math.round(fabric.revenue * 1000) / 1000,
+        profit: Math.round(fabric.profit * 1000) / 1000,
+      }));
 
     const netProfitToday = totalSalesToday - totalCostToday;
     const avgSaleValue =
       invoicesToday.length > 0 ? totalSalesToday / invoicesToday.length : 0;
 
+    // Month-to-date fabric KPIs (last 30 days)
+    const monthInvoices = await Invoice.schema(schema).findAll({
+      where: {
+        createdAt: { [Op.gte]: monthStart },
+        status: "Paid",
+      },
+      attributes: ["total_amount", "total_meters"],
+    });
+    const monthSales = monthInvoices.reduce(
+      (sum, inv) => sum + parseFloat(inv.total_amount || 0),
+      0,
+    );
+    const monthMeters = monthInvoices.reduce(
+      (sum, inv) => sum + parseFloat(inv.total_meters || 0),
+      0,
+    );
+
     // Total Inventory Value
     const inventoryItems = await InventoryItem.schema(schema).findAll({
       where: { status: "In Stock" },
-      attributes: ["weight", "buy_price_per_gram", "quantity"],
+      attributes: ["length_m", "cost_per_meter", "quantity"],
     });
 
     let totalInventoryValue = 0;
     inventoryItems.forEach((item) => {
       const value =
-        parseFloat(item.weight || 0) *
-        parseFloat(item.buy_price_per_gram || 0) *
+        parseFloat(item.length_m || 0) *
+        parseFloat(item.cost_per_meter || 0) *
         parseInt(item.quantity || 1);
       totalInventoryValue += value;
     });
@@ -177,16 +220,16 @@ export const getOwnerDashboard = async (req, res) => {
       `
       SELECT 
         CASE 
-          WHEN ii.metal_type IN ('Watch', 'Diamond') THEN ii.category
-          ELSE CONCAT(ii.category, ' ', it.karat, 'K')
+          WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN ii.fabric_type
+          ELSE CONCAT(ii.fabric_type, ' ', it.fabric_type, 'K')
         END AS name,
-        ii.category,
-        it.karat,
+        ii.fabric_type,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         SUM(
           CASE 
-            WHEN ii.metal_type IN ('Watch', 'Diamond') THEN COALESCE(ii.buy_price_per_gram, 0)
-            ELSE (COALESCE(it.buy_price_snapshot, 0) * COALESCE(it.weight, 0))
+            WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN COALESCE(ii.cost_per_meter, 0)
+            ELSE (COALESCE(it.cost_per_meter_snapshot, 0) * (COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)))
           END
         ) AS cost,
         COUNT(it.id) AS quantity
@@ -196,7 +239,7 @@ export const getOwnerDashboard = async (req, res) => {
       WHERE inv.created_at >= :dateStart 
         AND inv.created_at <= :dateEnd 
         AND inv.status = 'Paid'
-      GROUP BY ii.category, it.karat, ii.metal_type
+      GROUP BY ii.fabric_type, it.fabric_type, ii.fabric_type
       ORDER BY revenue DESC
     `,
       {
@@ -218,7 +261,7 @@ export const getOwnerDashboard = async (req, res) => {
     const karatSales = await sequelize.query(
       `
       SELECT 
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
@@ -227,10 +270,10 @@ export const getOwnerDashboard = async (req, res) => {
       WHERE inv.created_at >= :dateStart 
         AND inv.created_at <= :dateEnd 
         AND inv.status = 'Paid'
-        AND it.karat IS NOT NULL
-        AND ii.metal_type NOT IN ('Watch', 'Diamond')
-      GROUP BY it.karat
-      ORDER BY it.karat DESC
+        AND it.fabric_type IS NOT NULL
+        AND ii.fabric_type NOT IN ('Watch', 'Diamond')
+      GROUP BY it.fabric_type
+      ORDER BY it.fabric_type DESC
     `,
       {
         replacements: { dateStart: todayStart, dateEnd: todayEnd },
@@ -244,14 +287,14 @@ export const getOwnerDashboard = async (req, res) => {
       SELECT 
         ii.id,
         ii.item_name AS name,
-        ii.category,
-        ii.metal_type,
-        it.karat,
+        ii.fabric_type,
+        ii.fabric_type,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         SUM(
           CASE 
-            WHEN ii.metal_type IN ('Watch', 'Diamond') THEN COALESCE(ii.buy_price_per_gram, 0)
-            ELSE (COALESCE(it.buy_price_snapshot, 0) * COALESCE(it.weight, 0))
+            WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN COALESCE(ii.cost_per_meter, 0)
+            ELSE (COALESCE(it.cost_per_meter_snapshot, 0) * (COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)))
           END
         ) AS cost,
         COUNT(it.id) AS quantity
@@ -261,7 +304,7 @@ export const getOwnerDashboard = async (req, res) => {
       WHERE inv.created_at >= :dateStart 
         AND inv.created_at <= :dateEnd 
         AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.category, it.karat, ii.metal_type
+      GROUP BY ii.id, ii.item_name, ii.fabric_type, it.fabric_type, ii.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -325,8 +368,12 @@ export const getOwnerDashboard = async (req, res) => {
       kpi: {
         total_sales: totalSalesToday.toFixed(3),
         net_profit: netProfitToday.toFixed(3),
-        total_weight: totalWeightToday.toFixed(3),
+        total_meters: totalMetersToday.toFixed(3),
+        invoice_count: invoicesToday.length,
         avg_sale_value: avgSaleValue.toFixed(3),
+        month_sales: monthSales.toFixed(3),
+        month_invoices: monthInvoices.length,
+        month_meters: monthMeters.toFixed(3),
         total_inventory_value: totalInventoryValue.toFixed(3),
         active_branches: activeBranches,
         whatsapp_status: whatsappConfig?.session_status || "DISCONNECTED",
@@ -346,11 +393,12 @@ export const getOwnerDashboard = async (req, res) => {
         })),
         sales_by_category_karat: categoryKaratWithProfit,
         sales_by_karat: karatSales.map((k) => ({
-          karat: k.karat ? k.karat + "K" : null,
+          karat: k.fabric_type || k.karat || null,
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
         top_5_items_revenue: topItemsWithProfit,
+        top_fabrics: topFabrics,
         top_5_customers: topCustomers.map((c) => ({
           name: c.customer?.full_name || "Unknown",
           value: parseFloat(c.total_value || 0),
@@ -538,18 +586,18 @@ export const getManagerDashboard = async (req, res) => {
         `
         SELECT 
           CASE 
-            WHEN ii.metal_type IN ('Watch', 'Diamond') THEN ii.category
-            ELSE CONCAT(ii.category, ' ', it.karat, 'K')
+            WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN ii.fabric_type
+            ELSE CONCAT(ii.fabric_type, ' ', it.fabric_type, 'K')
           END AS name,
-          ii.category,
-          it.karat,
+          ii.fabric_type,
+          it.fabric_type,
           SUM(it.total_price) AS revenue,
           COUNT(it.id) AS quantity
         FROM "${schema}".invoice_items it
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
         INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
         WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-        GROUP BY ii.category, it.karat, ii.metal_type
+        GROUP BY ii.fabric_type, it.fabric_type, ii.fabric_type
         ORDER BY revenue DESC
       `,
         {
@@ -561,7 +609,7 @@ export const getManagerDashboard = async (req, res) => {
       sequelize.query(
         `
         SELECT 
-          it.karat,
+          it.fabric_type,
           SUM(it.total_price) AS revenue,
           COUNT(it.id) AS quantity
         FROM "${schema}".invoice_items it
@@ -570,10 +618,10 @@ export const getManagerDashboard = async (req, res) => {
         WHERE inv.branch_id = :branchId 
           AND inv.created_at >= :todayStart 
           AND inv.status = 'Paid'
-          AND it.karat IS NOT NULL
-          AND ii.metal_type NOT IN ('Watch', 'Diamond')
-        GROUP BY it.karat
-        ORDER BY it.karat DESC
+          AND it.fabric_type IS NOT NULL
+          AND ii.fabric_type NOT IN ('Watch', 'Diamond')
+        GROUP BY it.fabric_type
+        ORDER BY it.fabric_type DESC
       `,
         {
           replacements: { branchId, todayStart },
@@ -685,15 +733,15 @@ export const getManagerDashboard = async (req, res) => {
         SELECT 
           ii.id,
           ii.item_name AS name,
-          ii.category,
-          it.karat,
+          ii.fabric_type,
+          it.fabric_type,
           SUM(it.total_price) AS revenue,
           COUNT(it.id) AS quantity
         FROM "${schema}".invoice_items it
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
         INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
         WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-        GROUP BY ii.id, ii.item_name, ii.category, it.karat
+        GROUP BY ii.id, ii.item_name, ii.fabric_type, it.fabric_type
         ORDER BY revenue DESC
         LIMIT 5
       `,
@@ -729,16 +777,17 @@ export const getManagerDashboard = async (req, res) => {
     ]);
 
     let branchSalesToday = 0;
-    let totalWeightToday = 0;
+    let totalMetersToday = 0;
     let totalCostToday = 0;
 
     branchInvoicesToday.forEach((inv) => {
       branchSalesToday += parseFloat(inv.total_amount || 0);
-      totalWeightToday += parseFloat(inv.total_weight || 0);
+      totalMetersToday += parseFloat(inv.total_meters || 0);
       inv.items.forEach((item) => {
-        const weight = parseFloat(item.weight || 0);
-        const buyPrice = parseFloat(item.buy_price_snapshot || 0);
-        totalCostToday += weight * buyPrice;
+        const lineMeters =
+          parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
+        const costPerMeter = parseFloat(item.cost_per_meter_snapshot || 0);
+        totalCostToday += lineMeters * costPerMeter;
       });
     });
 
@@ -754,7 +803,7 @@ export const getManagerDashboard = async (req, res) => {
       kpi: {
         branch_sales: branchSalesToday.toFixed(3),
         net_profit: netProfitToday.toFixed(3),
-        total_weight: totalWeightToday.toFixed(3),
+        total_meters: totalMetersToday.toFixed(3),
         invoice_count: branchInvoicesToday.length,
         avg_sale_value: avgSaleValue.toFixed(3),
         low_stock_count: lowStockItems.length,
@@ -774,7 +823,7 @@ export const getManagerDashboard = async (req, res) => {
           quantity: parseInt(c.quantity || 0),
         })),
         salesByKarat: karatSales.map((k) => ({
-          karat: k.karat + "K",
+          karat: k.fabric_type || k.karat || "-",
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
@@ -924,18 +973,18 @@ export const getSalesmanDashboard = async (req, res) => {
       `
       SELECT 
         CASE 
-          WHEN ii.metal_type IN ('Watch', 'Diamond') THEN ii.category
-          ELSE CONCAT(ii.category, ' ', it.karat, 'K')
+          WHEN ii.fabric_type IN ('Watch', 'Diamond') THEN ii.fabric_type
+          ELSE CONCAT(ii.fabric_type, ' ', it.fabric_type, 'K')
         END AS name,
-        ii.category,
-        it.karat,
+        ii.fabric_type,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.category, it.karat, ii.metal_type
+      GROUP BY ii.fabric_type, it.fabric_type, ii.fabric_type
       ORDER BY revenue DESC
     `,
       {
@@ -948,7 +997,7 @@ export const getSalesmanDashboard = async (req, res) => {
     const karatSales = await sequelize.query(
       `
       SELECT 
-        it.karat,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
@@ -957,10 +1006,10 @@ export const getSalesmanDashboard = async (req, res) => {
       WHERE inv.created_by = :userId 
         AND inv.created_at >= :todayStart 
         AND inv.status = 'Paid'
-        AND it.karat IS NOT NULL
-        AND ii.metal_type NOT IN ('Watch', 'Diamond')
-      GROUP BY it.karat
-      ORDER BY it.karat DESC
+        AND it.fabric_type IS NOT NULL
+        AND ii.fabric_type NOT IN ('Watch', 'Diamond')
+      GROUP BY it.fabric_type
+      ORDER BY it.fabric_type DESC
     `,
       {
         replacements: { userId, todayStart },
@@ -974,16 +1023,16 @@ export const getSalesmanDashboard = async (req, res) => {
       SELECT 
         ii.id,
         ii.item_name AS name,
-        ii.category,
-        ii.metal_type,
-        it.karat,
+        ii.fabric_type,
+        ii.fabric_type,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.category, it.karat, ii.metal_type
+      GROUP BY ii.id, ii.item_name, ii.fabric_type, it.fabric_type, ii.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
     `,
@@ -1010,7 +1059,7 @@ export const getSalesmanDashboard = async (req, res) => {
           quantity: parseInt(c.quantity || 0),
         })),
         sales_by_karat: karatSales.map((k) => ({
-          karat: k.karat ? k.karat + "K" : null,
+          karat: k.fabric_type || k.karat || null,
           revenue: parseFloat(k.revenue || 0),
           quantity: parseInt(k.quantity || 0),
         })),
@@ -1134,7 +1183,7 @@ export const getDashboardAnalytics = async (req, res) => {
             where: combinedFilter,
           })) || 0;
         const totalWeightSold =
-          (await Invoice.schema(schema).sum("total_weight", {
+          (await Invoice.schema(schema).sum("total_meters", {
             where: combinedFilter,
           })) || 0;
         const totalTransactions =
@@ -1150,17 +1199,18 @@ export const getDashboardAnalytics = async (req, res) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["buy_price_per_gram"],
+              attributes: ["cost_per_meter"],
             },
           ],
-          attributes: ["total_price", "weight"],
+          attributes: ["total_price", "meters", "quantity"],
         });
 
         let totalCost = 0;
         soldItems.forEach((item) => {
           totalCost +=
-            parseFloat(item.inventory_item?.buy_price_per_gram || 0) *
-            parseFloat(item.weight);
+            parseFloat(item.inventory_item?.cost_per_meter || 0) *
+            parseFloat(item.meters || 0) *
+            (parseInt(item.quantity, 10) || 1);
         });
 
         const grossProfit = totalRevenue - totalCost;
@@ -1181,7 +1231,7 @@ export const getDashboardAnalytics = async (req, res) => {
             attributes: [
               [groupBy, "date"],
               [Sequelize.fn("SUM", Sequelize.col("total_amount")), "revenue"],
-              [Sequelize.fn("SUM", Sequelize.col("total_weight")), "weight"],
+              [Sequelize.fn("SUM", Sequelize.col("total_meters")), "weight"],
               [Sequelize.fn("COUNT", Sequelize.col("id")), "quantity"],
             ],
             where: combinedFilter,
@@ -1196,7 +1246,7 @@ export const getDashboardAnalytics = async (req, res) => {
             SELECT 
               DATE_TRUNC('${truncType}', created_at) AS date,
               SUM(total_amount) AS revenue,
-              SUM(total_weight) AS weight,
+              SUM(total_meters) AS weight,
               COUNT(id) AS quantity
             FROM "${schema}".invoices
             WHERE created_at BETWEEN :start AND :end
@@ -1240,7 +1290,7 @@ export const getDashboardAnalytics = async (req, res) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["buy_price_per_gram"],
+              attributes: ["cost_per_meter"],
             },
           ],
           attributes: ["total_price", "weight", "invoice_id"],
@@ -1313,22 +1363,22 @@ export const getDashboardAnalytics = async (req, res) => {
           let periodCost = 0;
           periodItems.forEach((item) => {
             periodCost +=
-              parseFloat(item.inventory_item?.buy_price_per_gram || 0) *
-              parseFloat(item.weight);
+              parseFloat(item.inventory_item?.cost_per_meter || 0) *
+              parseFloat(item.meters);
           });
 
           return {
             date: period.date,
             revenue: parseFloat(period.revenue) || 0,
             profit: (parseFloat(period.revenue) || 0) - periodCost,
-            weight: parseFloat(period.weight) || 0,
+            weight: parseFloat(period.meters ?? period.weight) || 0,
             quantity: parseInt(period.quantity) || 0,
           };
         });
 
         // 3. Category Distribution
         let categoryQuery = `
-          SELECT ii.category AS name, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity
+          SELECT ii.fabric_type AS name, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity
           FROM "${schema}".invoice_items it
           INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
           INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
@@ -1350,7 +1400,7 @@ export const getDashboardAnalytics = async (req, res) => {
           }
         }
 
-        categoryQuery += ` GROUP BY ii.category ORDER BY SUM(it.total_price) DESC`;
+        categoryQuery += ` GROUP BY ii.fabric_type ORDER BY SUM(it.total_price) DESC`;
 
         const categoryRaw = await sequelize.query(categoryQuery, {
           replacements: categoryReplacements,
@@ -1368,10 +1418,10 @@ export const getDashboardAnalytics = async (req, res) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["buy_price_per_gram", "category"],
+              attributes: ["cost_per_meter", "category"],
             },
           ],
-          attributes: ["total_price", "weight"],
+          attributes: ["total_price", "meters", "quantity"],
         });
 
         // Group items by category
@@ -1391,8 +1441,8 @@ export const getDashboardAnalytics = async (req, res) => {
           let catCost = 0;
           catItems.forEach((item) => {
             catCost +=
-              parseFloat(item.inventory_item?.buy_price_per_gram || 0) *
-              parseFloat(item.weight);
+              parseFloat(item.inventory_item?.cost_per_meter || 0) *
+              parseFloat(item.meters);
           });
 
           return {
@@ -1405,13 +1455,13 @@ export const getDashboardAnalytics = async (req, res) => {
 
         // 4. Karat Distribution (only for Gold, Silver, Platinum - exclude Watch and Diamond)
         let karatQuery = `
-          SELECT it.karat, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity, SUM(it.weight) AS weight
+          SELECT it.fabric_type, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity, SUM(it.meters * COALESCE(it.quantity,1)) AS meters
           FROM "${schema}".invoice_items it
           INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
           INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
           WHERE inv.created_at BETWEEN :start AND :end
-            AND it.karat IS NOT NULL
-            AND ii.metal_type NOT IN ('Watch', 'Diamond')
+            AND it.fabric_type IS NOT NULL
+            AND ii.fabric_type NOT IN ('Watch', 'Diamond')
         `;
 
         const karatReplacements = {
@@ -1430,9 +1480,9 @@ export const getDashboardAnalytics = async (req, res) => {
         }
 
         karatQuery += ` 
-          AND it.karat IS NOT NULL
-          GROUP BY it.karat 
-          ORDER BY it.karat DESC`;
+          AND it.fabric_type IS NOT NULL
+          GROUP BY it.fabric_type 
+          ORDER BY it.fabric_type DESC`;
 
         const karatRaw = await sequelize.query(karatQuery, {
           replacements: karatReplacements,
@@ -1450,7 +1500,7 @@ export const getDashboardAnalytics = async (req, res) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["buy_price_per_gram"],
+              attributes: ["cost_per_meter"],
             },
           ],
           where: {
@@ -1477,17 +1527,17 @@ export const getDashboardAnalytics = async (req, res) => {
           const karatItems = itemsByKarat[karat.karat] || [];
           let karatCost = 0;
           karatItems.forEach((item) => {
-            // For Watch and Diamond, use buy_price_per_gram as total (not per gram * weight)
-            const metalType = item.inventory_item?.metal_type;
+            // For Watch and Diamond, use cost_per_meter as total (not per gram * weight)
+            const metalType = item.inventory_item?.fabric_type;
             if (metalType === "Watch" || metalType === "Diamond") {
               karatCost += parseFloat(
-                item.inventory_item?.buy_price_per_gram || 0,
+                item.inventory_item?.cost_per_meter || 0,
               );
             } else {
-              // For Gold/Silver/Platinum, use buy_price_per_gram * weight
+              // For Gold/Silver/Platinum, use cost_per_meter * weight
               karatCost +=
-                parseFloat(item.inventory_item?.buy_price_per_gram || 0) *
-                parseFloat(item.weight);
+                parseFloat(item.inventory_item?.cost_per_meter || 0) *
+                parseFloat(item.meters);
             }
           });
 
@@ -1496,7 +1546,7 @@ export const getDashboardAnalytics = async (req, res) => {
             revenue: parseFloat(karat.revenue) || 0,
             profit: (parseFloat(karat.revenue) || 0) - karatCost,
             quantity: parseInt(karat.quantity) || 0,
-            weight: parseFloat(karat.weight) || 0,
+            weight: parseFloat(karat.meters ?? karat.weight) || 0,
           };
         });
 
@@ -1530,7 +1580,7 @@ export const getDashboardAnalytics = async (req, res) => {
               {
                 model: InventoryItem.schema(schema),
                 as: "inventory_item",
-                attributes: ["buy_price_per_gram"],
+                attributes: ["cost_per_meter"],
               },
             ],
             attributes: ["total_price", "weight", "invoice_id"],
@@ -1560,8 +1610,8 @@ export const getDashboardAnalytics = async (req, res) => {
           let branchCost = 0;
           branchItems.forEach((item) => {
             branchCost +=
-              parseFloat(item.inventory_item?.buy_price_per_gram || 0) *
-              parseFloat(item.weight);
+              parseFloat(item.inventory_item?.cost_per_meter || 0) *
+              parseFloat(item.meters);
           });
 
           return {
@@ -1576,7 +1626,7 @@ export const getDashboardAnalytics = async (req, res) => {
           kpi: {
             revenue: totalRevenue,
             profit: grossProfit,
-            weight_sold: totalWeightSold,
+            meters_sold: totalWeightSold,
             transactions: totalTransactions,
             quantity: totalQuantity,
           },
@@ -1764,9 +1814,9 @@ export const getDashboardAnalytics = async (req, res) => {
           currentPeriod.kpi.profit,
           previousPeriod.kpi.profit,
         ),
-        weight_sold: calculateChange(
-          currentPeriod.kpi.weight_sold,
-          previousPeriod.kpi.weight_sold,
+        meters_sold: calculateChange(
+          currentPeriod.kpi.meters_sold,
+          previousPeriod.kpi.meters_sold,
         ),
         transactions: calculateChange(
           currentPeriod.kpi.transactions,
@@ -1836,17 +1886,17 @@ export const getTopItems = async (req, res) => {
       SELECT 
         ii.id,
         ii.item_name AS name,
-        ii.category,
-        it.karat,
+        ii.fabric_type,
+        it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity,
-        SUM(it.weight) AS weight
+        SUM(it.meters * COALESCE(it.quantity,1)) AS meters
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at BETWEEN :startDate AND :endDate
       ${branchFilter.branch_id ? `AND inv.branch_id IN (:branchIds)` : ""}
-      GROUP BY ii.id, ii.item_name, ii.category, it.karat
+      GROUP BY ii.id, ii.item_name, ii.fabric_type, it.fabric_type
       ORDER BY revenue DESC
       LIMIT :limit
     `,
@@ -1874,7 +1924,7 @@ export const getTopItems = async (req, res) => {
           model: InventoryItem.schema(schema),
           as: "inventory_item",
           where: { id: { [Op.in]: itemIds } },
-          attributes: ["id", "buy_price_per_gram", "metal_type"],
+          attributes: ["id", "cost_per_meter", "fabric_type"],
         },
       ],
       attributes: ["total_price", "weight", "inventory_item_id"],
@@ -1906,21 +1956,21 @@ export const getTopItems = async (req, res) => {
       const inventoryItem = inventoryItemsById[item.id];
 
       let cost = 0;
-      // For Watch and Diamond, use buy_price_per_gram as total (not per gram * weight)
+      // For Watch and Diamond, use cost_per_meter as total (not per gram * weight)
       if (
-        inventoryItem?.metal_type === "Watch" ||
-        inventoryItem?.metal_type === "Diamond"
+        inventoryItem?.fabric_type === "Watch" ||
+        inventoryItem?.fabric_type === "Diamond"
       ) {
         cost =
-          parseFloat(inventoryItem?.buy_price_per_gram || 0) *
+          parseFloat(inventoryItem?.cost_per_meter || 0) *
           itemDetails.length;
       } else {
-        // For Gold/Silver/Platinum, use buy_price_per_gram * weight
+        // For Gold/Silver/Platinum, use cost_per_meter * weight
         itemDetails.forEach((detail) => {
           const buyPrice = parseFloat(
-            detail.inventory_item?.buy_price_per_gram || 0,
+            detail.inventory_item?.cost_per_meter || 0,
           );
-          const weight = parseFloat(detail.weight);
+          const weight = parseFloat(detail.meters || 0) * (parseInt(detail.quantity, 10) || 1);
           cost += buyPrice * weight;
         });
       }
@@ -1933,7 +1983,7 @@ export const getTopItems = async (req, res) => {
         revenue: parseFloat(item.revenue) || 0,
         profit: (parseFloat(item.revenue) || 0) - cost,
         quantity: parseInt(item.quantity) || 0,
-        weight: parseFloat(item.weight) || 0,
+        weight: parseFloat(item.meters) || 0,
       };
     });
 
