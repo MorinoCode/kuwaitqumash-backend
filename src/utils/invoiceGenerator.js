@@ -211,9 +211,9 @@ const L = {
   payment: { en: "Payment", ar: "الدفع" },
   itemCode: { en: "Item Code", ar: "رمز الصنف" },
   quantity: { en: "Qty", ar: "الكمية" },
-  workmanship: { en: "Workmanship/g", ar: "مصنعية/جرام" },
+  workmanship: { en: "Discount", ar: "الخصم" },
   totalWeight: { en: "Total Weight", ar: "الوزن الكلي" },
-  totalWeightWithPurity: { en: "Total Weight", ar: "مجموع الأوزان" },
+  totalWeightWithPurity: { en: "Total Meters", ar: "مجموع الأمتار" },
   grandTotal: { en: "Grand Total", ar: "الإجمالي" },
   stonesSection: { en: "Stones in sold items", ar: "الأحجار في الصنف المباع" },
   stoneWeight: { en: "Stone meters", ar: "وزن الحجر" },
@@ -698,7 +698,7 @@ export const generateInvoicePDF = async (
   doc.setTextColor(0, 0, 0);
 
   let headerX = tableStartX + 0.5;
-  const headerLabelsAr = ["# / م", "Item / الصنف", "Code / الكود", "Karat/العيار", "Wt/الوزن", "Qty/الكمية", "Price/سعر", "Labor/المصنعية", "Total/الإجمالي"];
+  const headerLabelsAr = ["# / م", "Item / الصنف", "Code / الكود", "Fabric/القماش", "M/الأمتار", "Qty/الكمية", "Price/m", "Disc/الخصم", "Total/الإجمالي"];
 
   headerLabelsAr.forEach((labelAr, idx) => {
     const width = colWidths[idx];
@@ -796,16 +796,14 @@ export const generateInvoicePDF = async (
       { text: safeStr(item.item_name, "-"), align: "left", font: false },
       { text: itemCode, align: "center", font: false },
       {
-        text: item.fabric_type
-          ? `${safeStr(item.fabric_type, "").replace(/K$/i, "")}K`
-          : "-",
+        text: safeStr(item.fabric_type, "-"),
         align: "center",
         font: false,
       },
       { text: (itemWeight || 0).toFixed(2), align: "right", font: false },
       { text: String(quantity), align: "center", font: false },
       { text: pricePerGram, align: "right", font: false },
-      { text: workmanshipPerGram, align: "right", font: false },
+      { text: itemLabor.toFixed(3), align: "right", font: false },
       { text: (itemPrice || 0).toFixed(3), align: "right", font: true },
     ];
 
@@ -911,7 +909,7 @@ export const generateInvoicePDF = async (
   doc.text(`${label("totalWeightWithPurity", true)}:`, m, y);
   doc.setTextColor(0, 0, 0);
   setFont(true);
-  const totalWeightText = `${safeNum(invoice.total_meters, 0).toFixed(2)} g`;
+  const totalWeightText = `${safeNum(invoice.total_meters, 0).toFixed(2)} m`;
   doc.text(totalWeightText, pageW - m - 2, y, { align: "right" });
   y += 4.5;
 

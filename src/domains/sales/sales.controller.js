@@ -110,54 +110,61 @@ export const createSale = async (req, res) => {
         );
       }
 
-      // Use weight from frontend (per unit), fallback to inventory weight
-      const weight = parseFloat(item.meters || inventoryItem.length_m);
-      if (isNaN(weight) || !weight || weight <= 0) {
+      // Billable length in meters for this line (per roll/unit)
+      const meters = parseFloat(item.meters || inventoryItem.length_m);
+      if (isNaN(meters) || meters <= 0) {
         throw new Error(
-          `Invalid weight for item ${item.id || inventoryItem.id}`,
+          "Invalid length (meters) for item " + (item.id || inventoryItem.id),
         );
       }
 
-      const pricePerGram = parseFloat(item.price_per_gram);
-      if (isNaN(pricePerGram) || !pricePerGram || pricePerGram < 0) {
+      const pricePerMeter = parseFloat(item.price_per_meter);
+      if (isNaN(pricePerMeter) || pricePerMeter <= 0) {
         throw new Error(
-          `Invalid price per gram for item ${item.id || inventoryItem.id}`,
+          "Invalid price per meter for item " + (item.id || inventoryItem.id),
         );
       }
 
-      const discountPerMeter = parseFloat(item.discount || 0);
-      if (isNaN(discountPerMeter)) {
+      const lineDiscount = parseFloat(item.discount || 0);
+      if (isNaN(lineDiscount) || lineDiscount < 0) {
         throw new Error(
-          `Invalid labor cost for item ${item.id || inventoryItem.id}`,
+          "Invalid discount for item " + (item.id || inventoryItem.id),
         );
       }
 
-      const itemTotal = parseFloat(item.total_price);
-      if (isNaN(itemTotal) || !itemTotal || itemTotal <= 0) {
+      const grossLine =
+        Math.round(meters * pricePerMeter * quantity * 1000) / 1000;
+      if (lineDiscount > grossLine) {
         throw new Error(
-          `Total price is required for item ${item.id || inventoryItem.id}. Please enter the total sale price.`,
+          "Discount exceeds line total for item " +
+            (item.id || inventoryItem.id),
         );
       }
 
-      const discountPerUnit = discountPerMeter * weight;
-      const discountLine = discountPerUnit * quantity;
+      const itemTotal = Math.round((grossLine - lineDiscount) * 1000) / 1000;
+      if (!itemTotal || itemTotal <= 0) {
+        throw new Error(
+          "Total price is required for item " + (item.id || inventoryItem.id),
+        );
+      }
 
-      totalMeters += weight * quantity;
-      totalDiscount += discountLine;
+      const clientTotal = parseFloat(item.total_price);
+      if (!isNaN(clientTotal) && Math.abs(clientTotal - itemTotal) > 0.01) {
+        logger.warn("Line total mismatch, using server total", {
+          component: "sales",
+          item_id: item.id,
+          client_total: clientTotal,
+          server_total: itemTotal,
+        });
+      }
+
+      totalMeters += meters * quantity;
+      totalDiscount += lineDiscount;
       grandTotal += itemTotal;
 
-      const stones = item.stones ?? inventoryItem.stones ?? [];
-      const stonesValue = Math.max(
-        0,
-        parseFloat(item.stones_value) ||
-          (Array.isArray(stones)
-            ? stones
-                .filter((s) => s && (s.has_value || s.value > 0))
-                .reduce((sum, s) => sum + (parseFloat(s.value) || 0), 0)
-            : 0),
-      );
 
-      const buyPricePerGram = parseFloat(inventoryItem.cost_per_meter || 0);
+      totalDiscount += discountLine;
+      grandTotal += itemTotal;
 
       invoiceItemsData.push({
         inventory_item_id: inventoryItem.id,
@@ -165,14 +172,14 @@ export const createSale = async (req, res) => {
         barcode: inventoryItem.barcode || null,
         item_name: inventoryItem.item_name,
         item_name_ar: inventoryItem.item_name_ar,
-        karat: inventoryItem.karat ?? "",
-        weight: weight,
-        cost_per_meter_snapshot: buyPricePerGram,
-        price_per_meter: pricePerGram,
-        discount: discountLine,
+        fabric_type: inventoryItem.fabric_type || null,
+        color: inventoryItem.color || null,
+        unit: inventoryItem.unit || "meter",
+        meters,
+        cost_per_meter_snapshot: parseFloat(inventoryItem.cost_per_meter || 0),
+        price_per_meter: pricePerMeter,
+        discount: lineDiscount,
         total_price: itemTotal,
-        stones: Array.isArray(stones) ? stones : [],
-        stones_value: stonesValue,
       });
 
       inventoryItem.quantity = Math.max(0, available - quantity);

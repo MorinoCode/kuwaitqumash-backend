@@ -12,24 +12,28 @@ const paymentMethod = z.enum([
 const saleItem = z
   .object({
     id: z.coerce.number().int().positive("Item id is required."),
-    weight: z
+    meters: z
       .union([
-        z.coerce.number().positive("Valid weight is required."),
+        z.coerce.number().positive("Valid length in meters is required."),
         z.string(),
       ])
       .transform((v) =>
         typeof v === "string" ? parseFloat(normalizeToLatinDigits(v)) : v
       ),
-    labor_cost: z
-      .union([z.coerce.number().min(0), z.string()])
-      .optional()
-      .transform((v) =>
-        typeof v === "string" ? parseFloat(normalizeToLatinDigits(v)) || 0 : v
-      ),
-    price_per_gram: z
+    price_per_meter: z
       .union([z.coerce.number().min(0), z.string()])
       .transform((v) =>
         typeof v === "string" ? parseFloat(normalizeToLatinDigits(v)) : v
+      ),
+    discount: z
+      .union([z.coerce.number().min(0), z.string()])
+      .optional()
+      .transform((v) =>
+        v === undefined || v === null || v === ""
+          ? 0
+          : typeof v === "string"
+            ? parseFloat(normalizeToLatinDigits(v)) || 0
+            : v
       ),
     total_price: z
       .union([
@@ -49,17 +53,6 @@ const saleItem = z
         v === undefined || v === null || v === ""
           ? 1
           : Math.max(1, parseInt(normalizeToLatinDigits(String(v)), 10) || 1)
-      ),
-    stones: z.array(z.any()).optional().default([]),
-    stones_value: z
-      .union([z.coerce.number().min(0), z.string()])
-      .optional()
-      .transform((v) =>
-        v === undefined || v === null || v === ""
-          ? 0
-          : typeof v === "string"
-          ? parseFloat(normalizeToLatinDigits(v)) || 0
-          : v
       ),
   })
   .strict();
