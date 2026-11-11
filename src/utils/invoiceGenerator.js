@@ -18,15 +18,6 @@ const safeNum = (v, def = 0) => {
 const safeStr = (v, def = "-") =>
   v != null && String(v).trim() !== "" ? String(v).trim() : def;
 
-const stoneWeightToGrams = (stone) => {
-  const w = Number(stone?.meters) || 0;
-  return stone?.unit === "ct" ? w * 0.2 : w;
-};
-const getStonesWeightG = (stones) => {
-  if (!Array.isArray(stones) || stones.length === 0) return 0;
-  return stones.reduce((sum, s) => sum + stoneWeightToGrams(s), 0);
-};
-
 const formatDate = (inv) => {
   const raw = inv.created_at || inv.createdAt;
   if (!raw) return "-";
@@ -193,7 +184,8 @@ function loadInvoiceFonts(doc) {
 
 const L = {
   invoice: { en: "INVOICE", ar: "فاتورة" },
-  cashSaleInvoice: { en: "Cash Sale Invoice", ar: "فاتورة بيع نقدي" },
+  fabricInvoice: { en: "FABRIC INVOICE", ar: "فاتورة أقمشة" },
+  cashSaleInvoice: { en: "Fabric Sale Invoice", ar: "فاتورة بيع أقمشة" },
   customerCopy: { en: "Customer Copy", ar: "نسخة العميل" },
   customerDetails: { en: "Customer Details", ar: "بيانات العميل" },
   invoiceDetails: { en: "Invoice Details", ar: "تفاصيل الفاتورة" },
@@ -209,12 +201,15 @@ const L = {
   itemCode: { en: "Item Code", ar: "رمز الصنف" },
   quantity: { en: "Qty", ar: "الكمية" },
   workmanship: { en: "Discount", ar: "الخصم" },
-  totalWeight: { en: "Total Weight", ar: "الوزن الكلي" },
-  totalWeightWithPurity: { en: "Total Meters", ar: "مجموع الأمتار" },
+  totalMeters: { en: "Total Meters", ar: "مجموع الأمتار" },
   grandTotal: { en: "Grand Total", ar: "الإجمالي" },
-  stonesSection: { en: "Stones in sold items", ar: "الأحجار في الصنف المباع" },
-  stoneWeight: { en: "Stone meters", ar: "وزن الحجر" },
-  stoneValue: { en: "Stone value", ar: "قيمة الحجر" },
+  purchasePurpose: { en: "Purchase Purpose", ar: "الغرض من الشراء" },
+  purposeHome: { en: "Home", ar: "منزل" },
+  purposeTailoring: { en: "Tailoring", ar: "خياطة" },
+  purposeTrade: { en: "Trade", ar: "تجارة" },
+  purposeGift: { en: "Gift", ar: "هدية" },
+  purposeOther: { en: "Other", ar: "أخرى" },
+  notes: { en: "Notes", ar: "ملاحظات" },
   netAmount: { en: "NET AMOUNT", ar: "الصافي" },
   paymentMethod: { en: "Payment Method", ar: "طريقة الدفع" },
   totalPaid: { en: "Total Paid", ar: "إجمالي المدفوعات" },
@@ -431,39 +426,43 @@ export const generateInvoicePDF = async (
     y += branchSectionHeight + 0.5;
   }
 
-  const headerHeight = 11.5;
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.4);
-  doc.setFillColor(255, 255, 255);
+  const accent = [13, 148, 136];
+  const headerHeight = 13.5;
+  doc.setFillColor(...accent);
+  doc.setDrawColor(...accent);
+  doc.setLineWidth(0.3);
   doc.rect(m, y, pageW - m * 2, headerHeight, "FD");
 
-  doc.setTextColor(0, 0, 0);
+  const headerBrand =
+    String(branchName || storeSettings?.name || "KUWAIT QUMASH").toUpperCase();
 
-  if (branchName && currentPage === 1) {
-    doc.setFontSize(8.5);
-    setFont(true);
-    doc.setFont("helvetica", "bold");
-    const branchText = String(branchName).toUpperCase();
-    doc.text(branchText, pageW / 2, y + 3.5, { align: "center" });
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9.5);
+  doc.text(headerBrand, pageW / 2, y + 4.6, { align: "center" });
+
+  doc.setFontSize(7);
+  setArFont(true);
+  doc.text(label("cashSaleInvoice", true), pageW / 2, y + 9.2, { align: "center" });
+
+  doc.setFontSize(5.5);
+  doc.text(label("customerCopy", true), m + 2.5, y + 4.6);
+
+  const invNum = String(invoice.invoice_number || "N/A").toUpperCase();
+  doc.text(`#${invNum}`, pageW - m - 2.5, y + 4.6, { align: "right" });
+
+  const headerMeta = `${formatDate(invoice)}  •  ${formatTime(invoice)}`;
+  doc.text(headerMeta, m + 2.5, y + 9.2);
+
+  if (storeSettings?.phone) {
+    doc.setFont("helvetica", "normal");
+    doc.text(`TEL ${storeSettings.phone}`, pageW - m - 2.5, y + 9.2, {
+      align: "right",
+    });
   }
 
-  doc.setFontSize(9);
-  setFont(false);
-  setArabicFont();
-  doc.text(label("cashSaleInvoice", true), m + 2.5, y + 5.5);
-
-  doc.setFontSize(6.5);
-  doc.text(label("customerCopy", true), m + 2.5, y + 9.5);
-
-  doc.setFontSize(6.5);
-  setFont(false);
-  const invNum = String(invoice.invoice_number || "N/A").toUpperCase();
-  doc.text(`${label("invoice", false)} #${invNum}`, pageW - m - 2.5, y + 9.5, {
-    align: "right",
-  });
-
   doc.setTextColor(0, 0, 0);
-  y += headerHeight + 1.0;
+  y += headerHeight + 1.6;
 
   doc.setDrawColor(...brand);
   doc.setLineWidth(0.4);
@@ -671,15 +670,15 @@ export const generateInvoicePDF = async (
 
   const tableWidth = pageW - 2 * m;
   const colWidths = [
-    tableWidth * 0.045,
-    tableWidth * 0.17,
-    tableWidth * 0.17,
-    tableWidth * 0.075,
-    tableWidth * 0.08,
-    tableWidth * 0.065,
-    tableWidth * 0.105,
-    tableWidth * 0.105,
-    tableWidth * 0.185,
+    tableWidth * 0.04,
+    tableWidth * 0.2,
+    tableWidth * 0.16,
+    tableWidth * 0.13,
+    tableWidth * 0.07,
+    tableWidth * 0.06,
+    tableWidth * 0.1,
+    tableWidth * 0.09,
+    tableWidth * 0.15,
   ];
 
   const rowHeight = 3.8;
@@ -695,7 +694,17 @@ export const generateInvoicePDF = async (
   doc.setTextColor(0, 0, 0);
 
   let headerX = tableStartX + 0.5;
-  const headerLabelsAr = ["# / م", "Item / الصنف", "Code / الكود", "Fabric/القماش", "M/الأمتار", "Qty/الكمية", "Price/m", "Disc/الخصم", "Total/الإجمالي"];
+  const headerLabelsAr = [
+    "#",
+    "Item / الصنف",
+    "Code / الكود",
+    "Fabric / القماش",
+    "Meters / الأمتار",
+    "Qty / الكمية",
+    "Price/m",
+    "Disc / الخصم",
+    "Total / الإجمالي",
+  ];
 
   headerLabelsAr.forEach((labelAr, idx) => {
     const width = colWidths[idx];
@@ -766,16 +775,12 @@ export const generateInvoicePDF = async (
     const itemWeight = safeNum(item.meters, 0);
     const itemLabor = safeNum(item.discount, 0);
     const itemPrice = safeNum(item.total_price, 0);
-    const weightQty = itemWeight * quantity;
-    const workmanshipPerGram =
-      weightQty > 0 && itemLabor >= 0
-        ? (itemLabor / weightQty).toFixed(3)
-        : "0.000";
-    const pricePerGram =
+    const totalMetersForRow = itemWeight * quantity;
+    const pricePerMeter =
       item.price_per_meter != null && item.price_per_meter !== ""
         ? safeNum(item.price_per_meter, 0).toFixed(3)
-        : weightQty > 0 && itemPrice >= 0
-        ? (itemPrice / weightQty).toFixed(3)
+        : totalMetersForRow > 0 && itemPrice >= 0
+        ? (itemPrice / totalMetersForRow).toFixed(3)
         : "0.000";
 
     if (idx % 2 === 1) {
@@ -799,7 +804,7 @@ export const generateInvoicePDF = async (
       },
       { text: (itemWeight || 0).toFixed(2), align: "right", font: false },
       { text: String(quantity), align: "center", font: false },
-      { text: pricePerGram, align: "right", font: false },
+      { text: pricePerMeter, align: "right", font: false },
       { text: itemLabor.toFixed(3), align: "right", font: false },
       { text: (itemPrice || 0).toFixed(3), align: "right", font: true },
     ];
@@ -847,51 +852,7 @@ export const generateInvoicePDF = async (
   doc.line(tableStartX, y, tableStartX + tableWidth, y);
   y += 1.5;
 
-  const itemsWithStones = itemsList.filter(
-    (it) =>
-      (Array.isArray(it.stones) && it.stones.length > 0) ||
-      safeNum(it.stones_value, 0) > 0
-  );
-  if (itemsWithStones.length > 0) {
-    checkPageBreak(8);
-    doc.setDrawColor(...brand);
-    doc.setLineWidth(0.25);
-    const boxPadding = 3;
-    const boxStartY = y;
-    setArabicFont();
-    doc.setFontSize(6.0);
-    doc.setTextColor(60, 60, 60);
-    doc.text(`${label("stonesSection", true)}:`, m + 1.5, y + 3.5);
-    doc.setTextColor(0, 0, 0);
-    setArFont(true);
-    y += 4.5;
-    itemsWithStones.forEach((it, _i) => {
-      const invIt = it.inventoryItem || {};
-      const code = safeStr(
-        it.barcode || invIt.barcode || invIt.rfid_tag || "",
-        "-"
-      );
-      const stW = getStonesWeightG(it.stones || []);
-      const stV = safeNum(it.stones_value, 0);
-      const line = `${safeStr(it.item_name, "-")} (${code}) — ${label(
-        "stoneWeight",
-        true
-      )}: ${stW.toFixed(2)} g${
-        stV > 0
-          ? `, ${label("stoneValue", true)}: ${stV.toFixed(2)} KD`
-          : ""
-      }`;
-      doc.setFontSize(5.5);
-      const lines = doc.splitTextToSize(line, pageW - 2 * m - 2 * boxPadding);
-      lines.forEach((l) => {
-        doc.text(l, m + boxPadding, y + 1.5);
-        y += 3.0;
-      });
-    });
-    y += 0.8;
-    doc.rect(m, boxStartY, pageW - 2 * m, y - boxStartY);
-    y += 1.5;
-  }
+  checkPageBreak(8);
 
   checkPageBreak(8);
 
@@ -903,7 +864,7 @@ export const generateInvoicePDF = async (
   setArabicFont();
   doc.setFontSize(6.0);
   doc.setTextColor(60, 60, 60);
-  doc.text(`${label("totalWeightWithPurity", true)}:`, m, y);
+  doc.text(`${label("totalMeters", true)}:`, m, y);
   doc.setTextColor(0, 0, 0);
   setFont(true);
   const totalWeightText = `${safeNum(invoice.total_meters, 0).toFixed(2)} m`;
@@ -916,7 +877,7 @@ export const generateInvoicePDF = async (
   doc.setTextColor(0, 0, 0);
   setFont(true);
   doc.text(
-    `${safeNum(invoice.total_amount, 0).toFixed(3)} KD`,
+    `${safeNum(invoice.total_amount, 0).toFixed(3)} KWD`,
     pageW - m - 2,
     y,
     { align: "right" }
@@ -939,7 +900,7 @@ export const generateInvoicePDF = async (
 
   paymentsList.forEach((p) => {
     const methodText = `${safeStr(p.method, "Cash")}:`;
-    const amountText = `${safeNum(p.amount, 0).toFixed(3)} KD`;
+    const amountText = `${safeNum(p.amount, 0).toFixed(3)} KWD`;
     const methodLines = doc.splitTextToSize(
       methodText,
       (pageW - 2 * m - 6) / 2
@@ -957,7 +918,7 @@ export const generateInvoicePDF = async (
 
   if (remainingAmount > 0.001) {
     const remainingLabel = `${label("remainingAmount", true)}:`;
-    const remainingValue = `${remainingAmount.toFixed(3)} KD`;
+    const remainingValue = `${remainingAmount.toFixed(3)} KWD`;
     const remainingLabelLines = doc.splitTextToSize(
       remainingLabel,
       (pageW - 2 * m - 6) / 2
@@ -1000,7 +961,7 @@ export const generateInvoicePDF = async (
   paymentsList.forEach((p) => {
     const methodText = `${safeStr(p.method, "Cash")}:`;
     const paymentAmount = safeNum(p.amount, 0) || 0;
-    const amountText = `${paymentAmount.toFixed(3)} KD`;
+    const amountText = `${paymentAmount.toFixed(3)} KWD`;
 
     const methodLines = doc.splitTextToSize(
       methodText,
@@ -1036,7 +997,7 @@ export const generateInvoicePDF = async (
   doc.setFontSize(6.5);
   const totalPaidLabel = `${label("totalPaid", true)}:`;
   const totalPaidValue = totalPaid || 0;
-  const totalPaidValueText = `${totalPaidValue.toFixed(3)} KD`;
+  const totalPaidValueText = `${totalPaidValue.toFixed(3)} KWD`;
   const totalPaidLabelLines = doc.splitTextToSize(
     totalPaidLabel,
     (pageW - 2 * m - 6) / 2
@@ -1068,7 +1029,7 @@ export const generateInvoicePDF = async (
     doc.setFontSize(6.5);
     const remainingLabel = `${label("remainingAmount", true)}:`;
     const remainingValue = remainingAmount || 0;
-    const remainingValueText = `${remainingValue.toFixed(3)} KD`;
+    const remainingValueText = `${remainingValue.toFixed(3)} KWD`;
     const remainingLabelLines = doc.splitTextToSize(
       remainingLabel,
       (pageW - 2 * m - 6) / 2
@@ -1108,7 +1069,7 @@ export const generateInvoicePDF = async (
   doc.setTextColor(0, 0, 0);
   setArFont(true);
   doc.setFontSize(8.5);
-  const valText = ` ${safeNum(invoice.total_amount, 0).toFixed(3)} KD`;
+  const valText = ` ${safeNum(invoice.total_amount, 0).toFixed(3)} KWD`;
   const labelText = `NET AMOUNT / الصافي :`;
   doc.text(labelText, pageW / 2, y + netAmountHeight / 2 + 0.8, { align: "right" });
   setArFont(false);
@@ -1117,7 +1078,7 @@ export const generateInvoicePDF = async (
   y += netAmountHeight + 2;
 
   const termsAr =
-    "الشروط والأحكام: عيار الذهب مطابق للمواصفات الكويتية. القطع المقصوصة أو المصنعة خصيصاً لا تسترد ولا تبدل. الاستبدال خلال ٣ أيام بوجود الفاتورة الأصلية وبشرط أن تكون البضاعة بحالتها الأصلية. مبيعات القطع المعدلة نهائية.";
+    "الشروط والأحكام: الأقمشة المقصوصة أو المعدّلة حسب الطلب لا تُرد ولا تُستبدل. الاستبدال خلال ٣ أيام بوجود الفاتورة الأصلية وبشرط أن تكون البضاعة بحالتها الأصلية وغير مستخدمة. الكميات المقصوصة نهائية بعد إتمام القص.";
 
   const termsBoxW = pageW - 2 * m - 4;
   doc.setFontSize(5.5);
@@ -1146,7 +1107,7 @@ export const generateInvoicePDF = async (
 
   y += termsHeight + 4.5;
 
-  const kycHeight = 3 * 6.5 + 15;
+  const kycHeight = 2 * 6.5 + 16;
   checkPageBreak(kycHeight);
 
   const kycX = m;
@@ -1176,97 +1137,40 @@ export const generateInvoicePDF = async (
 
   const headerBg = brandLight;
 
+  const drawRowHeader = (rowY, width, text) => {
+    const rx = kycX + kycW;
+    drawCell(rx - width, rowY, width, rowH, headerBg);
+    setArFont(true);
+    doc.setFontSize(6.0);
+    doc.setTextColor(0, 0, 0);
+    doc.text(text, rx - width / 2, rowY + rowH / 2 + 1.2, { align: "center" });
+  };
+
   currentY = y;
 
-  let w1 = kycW * 0.15;
-  let rx = kycX + kycW;
-  doc.setDrawColor(...brandDark);
-  drawCell(rx - w1, currentY, w1, rowH, headerBg);
-  setArFont(true);
-  doc.setFontSize(6.0);
-  doc.setTextColor(0,0,0);
-  doc.text("سبب الشراء", rx - w1 / 2, currentY + 2.8, { align: "center" });
+  const purposeOptions = [
+    "purposeHome",
+    "purposeTailoring",
+    "purposeTrade",
+    "purposeGift",
+    "purposeOther",
+  ];
+  const purposeHeaderW = kycW * 0.18;
+  drawRowHeader(currentY, purposeHeaderW, L.purchasePurpose.ar);
 
-  rx -= w1;
-  let w2 = kycW * 0.25;
-  drawCell(rx - w2, currentY, w2, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "استثمار");
-
-  rx -= w2;
-  let w3 = kycW * 0.20;
-  drawCell(rx - w3, currentY, w3, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "ادخار");
-
-  rx -= w3;
-  let w4 = kycW * 0.20;
-  drawCell(rx - w4, currentY, w4, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "هديه");
-
-  rx -= w4;
-  let w5 = rx - kycX;
-  drawCell(kycX, currentY, w5, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "أخرى");
-
+  let rx = kycX + kycW - purposeHeaderW;
+  const optionW = (rx - kycX) / purposeOptions.length;
+  purposeOptions.forEach((key) => {
+    drawCell(rx - optionW, currentY, optionW, rowH);
+    drawCheckboxWithText(rx, currentY + rowH / 2, L[key].ar);
+    rx -= optionW;
+  });
   currentY += rowH;
 
-  rx = kycX + kycW;
-  let c1 = kycW * 0.15;
-  drawCell(rx - c1, currentY, c1, rowH, headerBg);
-  setArFont(true);
-  doc.text("مصدر الاموال", rx - c1 / 2, currentY + 2.8, { align: "center" });
-
-  let remW = kycW - c1;
-  let colW = remW / 5;
-
-  rx -= c1;
-  drawCell(rx - colW, currentY, colW, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "راتب");
-
-  rx -= colW;
-  drawCell(rx - colW, currentY, colW, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "نهاية الخدمة");
-
-  rx -= colW;
-  drawCell(rx - colW, currentY, colW, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "ادخار تجاري");
-
-  rx -= colW;
-  drawCell(rx - colW, currentY, colW, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "قرض / تمويل");
-
-  rx -= colW;
-  drawCell(kycX, currentY, rx - kycX, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "أخرى");
-
-  currentY += rowH;
-
-  rx = kycX + kycW;
-  let j1 = kycW * 0.15;
-  drawCell(rx - j1, currentY, j1, rowH, headerBg);
-  setArFont(true);
-  doc.text("الوظيفه", rx - j1 / 2, currentY + 2.8, { align: "center" });
-
-  rx -= j1;
-  let j2 = kycW * 0.35;
-  drawCell(rx - j2, currentY, j2, rowH);
-
-  rx -= j2;
-  let j3 = kycW * 0.35;
-  drawCell(rx - j3, currentY, j3, rowH, headerBg);
-  setArFont(true);
-  doc.text("هل انت او اي من اقاربك معرض سياسيا", rx - j3 / 2, currentY + 2.8, { align: "center" });
-
-  rx -= j3;
-  let j4 = (rx - kycX) / 2;
-  drawCell(rx - j4, currentY, j4, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "لا");
-
-  rx -= j4;
-  drawCell(kycX, currentY, rx - kycX, rowH);
-  drawCheckboxWithText(rx, currentY + rowH / 2, "نعم");
-
-  currentY += rowH;
-  currentY += 6.5;
+  const notesHeaderW = kycW * 0.18;
+  drawRowHeader(currentY, notesHeaderW, L.notes.ar);
+  drawCell(kycX, currentY, kycW - notesHeaderW, rowH);
+  currentY += rowH + 8;
 
   setArFont(true);
   doc.setFontSize(6.5);
