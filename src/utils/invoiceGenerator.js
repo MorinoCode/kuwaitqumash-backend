@@ -1491,49 +1491,23 @@ export const generateCreditNotePDF = async (
   return { buffer };
 };
 
-// A fabric shop sells by the metre, so the report is labelled for fabric and not
-// with the gold-shop "weight in grams" wording it used to carry.
-const SALES_EXCEL_HEADERS = {
-  fa: [
-    "تاریخ",
-    "ساعت",
-    "شماره فاکتور",
-    "شعبه",
-    "فروشنده",
-    "نام مشتری",
-    "تلفن",
-    "آدرس",
-    "متراژ کل (متر)",
-    "مبلغ کل (دینار)",
-    "روش پرداخت",
-  ],
-  ar: [
-    "التاريخ",
-    "الوقت",
-    "رقم الفاتورة",
-    "الفرع",
-    "البائع",
-    "اسم العميل",
-    "الهاتف",
-    "العنوان",
-    "إجمالي الأمتار (متر)",
-    "المبلغ الإجمالي (د.ك)",
-    "طريقة الدفع",
-  ],
-  en: [
-    "Date",
-    "Time",
-    "Invoice #",
-    "Branch",
-    "Seller",
-    "Customer Name",
-    "Phone",
-    "Address",
-    "Total Meters (m)",
-    "Total Amount (KD)",
-    "Payment Method",
-  ],
-};
+// The report is handed to Kuwaiti customers, so its headers are always Arabic.
+// A fabric shop sells by the metre, hence metres instead of the gold-shop grams.
+const SALES_EXCEL_HEADERS = [
+  "التاريخ",
+  "الوقت",
+  "رقم الفاتورة",
+  "الفرع",
+  "البائع",
+  "اسم العميل",
+  "الهاتف",
+  "العنوان",
+  "إجمالي الأمتار (متر)",
+  "المبلغ الإجمالي (د.ك)",
+  "طريقة الدفع",
+];
+
+const SALES_EXCEL_SHEET_NAME = "المبيعات";
 
 const SALES_EXCEL_KEYS = [
   { key: "date", width: 15 },
@@ -1549,16 +1523,12 @@ const SALES_EXCEL_KEYS = [
   { key: "payment", width: 25 },
 ];
 
-const buildSalesExcelColumns = (lang) => {
-  const headers =
-    SALES_EXCEL_HEADERS[String(lang || "fa").slice(0, 2)] ||
-    SALES_EXCEL_HEADERS.fa;
-  return SALES_EXCEL_KEYS.map((col, i) => ({
-    header: headers[i],
+const buildSalesExcelColumns = () =>
+  SALES_EXCEL_KEYS.map((col, i) => ({
+    header: SALES_EXCEL_HEADERS[i],
     key: col.key,
     width: col.width,
   }));
-};
 
 const buildSalesExcelRow = (inv) => {
   const invDate = new Date(inv.createdAt);
@@ -1595,7 +1565,6 @@ export const streamSalesExcel = async ({
   fetchPage,
   totalCount,
   pageSize = 1000,
-  lang = "fa",
 }) => {
   res.setHeader(
     "Content-Type",
@@ -1611,8 +1580,8 @@ export const streamSalesExcel = async ({
     useStyles: false,
     useSharedStrings: false,
   });
-  const worksheet = workbook.addWorksheet("Sales");
-  worksheet.columns = buildSalesExcelColumns(lang);
+  const worksheet = workbook.addWorksheet(SALES_EXCEL_SHEET_NAME);
+  worksheet.columns = buildSalesExcelColumns();
 
   let written = 0;
   for (let offset = 0; offset < totalCount; offset += pageSize) {
@@ -1630,10 +1599,10 @@ export const streamSalesExcel = async ({
   return written;
 };
 
-export const generateSalesExcelBuffer = async (invoices, lang = "fa") => {
+export const generateSalesExcelBuffer = async (invoices) => {
   const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet("Sales");
-  worksheet.columns = buildSalesExcelColumns(lang);
+  const worksheet = workbook.addWorksheet(SALES_EXCEL_SHEET_NAME);
+  worksheet.columns = buildSalesExcelColumns();
   for (const inv of invoices) {
     const invDate = new Date(inv.createdAt);
     const pays = inv.payments || [];
