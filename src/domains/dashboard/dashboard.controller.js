@@ -28,21 +28,19 @@ export const getOwnerDashboard = async (req, res) => {
 
     const cacheKey = `dashboard:owner:${req.tenant.slug}:${startDate || "today"}:${endDate || "today"}`;
 
-    if (!startDate && !endDate) {
-      const dashboardData = await cacheGet(cacheKey);
-      if (dashboardData) {
-        logger.info("Owner dashboard served from cache", {
-          component: "dashboard",
-          tenant: req.tenant.slug,
-          requestId: req.requestId,
-        });
-        return res.json({
-          success: true,
-          data: {
-            ...dashboardData,
-          },
-        });
-      }
+    const cachedDashboard = await cacheGet(cacheKey);
+    if (cachedDashboard) {
+      logger.info("Owner dashboard served from cache", {
+        component: "dashboard",
+        tenant: req.tenant.slug,
+        requestId: req.requestId,
+      });
+      return res.json({
+        success: true,
+        data: {
+          ...cachedDashboard,
+        },
+      });
     }
 
     logger.info("Owner dashboard fetching from database", {
@@ -388,9 +386,7 @@ export const getOwnerDashboard = async (req, res) => {
       last_updated: new Date().toISOString(),
     };
 
-    if (!startDate && !endDate) {
-      await cacheSet(cacheKey, dashboardData, 60);
-    }
+    await cacheSet(cacheKey, dashboardData, 60);
 
     res.json({
       success: true,
@@ -828,9 +824,7 @@ export const getManagerDashboard = async (req, res) => {
       last_updated: new Date().toISOString(),
     };
 
-    if (!startDate && !endDate) {
-      await cacheSet(cacheKey, dashboardData, 60);
-    }
+    await cacheSet(cacheKey, dashboardData, 60);
 
     res.json({
       success: true,

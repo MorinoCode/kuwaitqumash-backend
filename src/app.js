@@ -122,8 +122,8 @@ app.use(
 app.use(requestId);
 
 const apiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 500,
+  windowMs: Number(process.env.API_RATE_LIMIT_WINDOW_MS) || 1 * 60 * 1000,
+  max: Number(process.env.API_RATE_LIMIT_MAX) || 500,
   message: {
     success: false,
     message: "Too many requests. Please try again later.",
