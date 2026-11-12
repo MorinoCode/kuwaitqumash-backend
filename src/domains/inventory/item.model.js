@@ -96,6 +96,10 @@ const InventoryItem = sequelize.define('InventoryItem', {
     type: DataTypes.INTEGER,
     allowNull: false
   },
+  alert_dismissed_at: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
   images: {
     type: DataTypes.ARRAY(DataTypes.STRING),
     defaultValue: [],

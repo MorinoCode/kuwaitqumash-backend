@@ -11,6 +11,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import sequelize from "./config/database.js";
 import logger from "./utils/logger.js";
+import { ensureTenantMigrations } from "./utils/schema.manager.js";
 
 process.on("unhandledRejection", (reason) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
@@ -463,6 +464,8 @@ const startServer = async () => {
 
           await sequelize.query("SET search_path TO public");
         } else { void 0; }
+
+        await ensureTenantMigrations(schema);
       } catch (checkError) {
         logger.warn("Tenant schema check failed, will sync on first use", {
           component: "startup",

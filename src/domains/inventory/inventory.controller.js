@@ -6,6 +6,7 @@ import { saveImage, deleteImage } from "../../utils/fileUpload.js";
 import { generateUniqueBarcode } from "../../utils/barcode.js";
 import { normalizeToLatinDigits } from "../../utils/normalizeNumbers.js";
 import logger from "../../utils/logger.js";
+import { invalidateDashboardCache } from "../../utils/dashboard-cache.js";
 
 export const addItem = async (req, res) => {
   try {
@@ -506,6 +507,17 @@ export const updateItem = async (req, res) => {
       updateData.status = "In Stock";
     }
 
+    // Re-arm the low-stock alert once the item is back above its limit, so a
+    // dismissed alert does not hide a future shortage of the same item.
+    const newMinLevel =
+      updateData.min_stock_level !== undefined &&
+      updateData.min_stock_level !== null
+        ? parseInt(updateData.min_stock_level, 10)
+        : item.min_stock_level;
+    if (newQty > newMinLevel && item.alert_dismissed_at) {
+      updateData.alert_dismissed_at = null;
+    }
+
     await item.update(updateData);
 
     await item.reload();
@@ -524,6 +536,40 @@ export const updateItem = async (req, res) => {
     res
       .status(500)
       .json({ message: "Failed to update item. Please try again." });
+  }
+};
+
+export const dismissItemAlert = async (req, res) => {
+  try {
+    const schema = req.tenant.db_schema;
+    const { id } = req.params;
+
+    const item = await InventoryItem.schema(schema).findByPk(id);
+    if (!item) return res.status(404).json({ message: "Item not found" });
+
+    if (
+      req.user.role !== "store_owner" &&
+      item.branch_id !== req.user.branch_id
+    ) {
+      return res.status(403).json({ message: "Access denied." });
+    }
+
+    await item.update({ alert_dismissed_at: new Date() });
+
+    await invalidateDashboardCache(req.tenant.slug);
+
+    res.json({
+      success: true,
+      message: "Alert dismissed",
+      data: { id: item.id, alert_dismissed_at: item.alert_dismissed_at },
+    });
+  } catch (error) {
+    logger.error("Dismiss Item Alert Error", {
+      component: "inventory",
+      error: error?.message,
+      stack: error?.stack,
+    });
+    res.status(500).json({ message: "Failed to dismiss alert. Please try again." });
   }
 };
 

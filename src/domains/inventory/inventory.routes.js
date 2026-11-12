@@ -76,6 +76,11 @@ router.post('/:id/delete-image',
   inventoryController.deleteItemImage
 );
 
+router.post('/:id/dismiss-alert',
+  restrictTo('store_owner', 'branch_manager', 'sales_man'),
+  inventoryController.dismissItemAlert
+);
+
 router.delete('/:id',
   restrictTo('store_owner', 'branch_manager', 'sales_man'),
   inventoryController.deleteItem

@@ -356,6 +356,7 @@ export const getOwnerDashboard = async (req, res) => {
       where: {
         status: "In Stock",
         quantity: { [Op.lte]: Sequelize.col("min_stock_level") },
+        alert_dismissed_at: null,
       },
       attributes: [
         "id",
@@ -545,6 +546,7 @@ export const getManagerDashboard = async (req, res) => {
           branch_id: branchId,
           status: "In Stock",
           quantity: { [Op.lte]: Sequelize.col("min_stock_level") },
+          alert_dismissed_at: null,
         },
         attributes: [
           "id",

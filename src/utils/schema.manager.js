@@ -169,3 +169,23 @@ export const createTenantSchema = async (tenantData, adminUserData) => {
     throw error;
   }
 };
+
+/**
+ * Adds columns that were introduced after a tenant schema was first created.
+ * `sync({ alter: false })` never adds them, so each migration is idempotent and
+ * runs for every tenant on startup.
+ */
+export const ensureTenantMigrations = async (schema) => {
+  try {
+    await sequelize.query(
+      `ALTER TABLE "${schema}".inventory_items
+       ADD COLUMN IF NOT EXISTS alert_dismissed_at TIMESTAMP WITH TIME ZONE`
+    );
+  } catch (error) {
+    logger.warn("Tenant migration failed", {
+      component: "schema.manager",
+      schema,
+      error: error?.message,
+    });
+  }
+};
