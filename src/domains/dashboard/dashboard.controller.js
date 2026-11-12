@@ -242,7 +242,6 @@ export const getOwnerDashboard = async (req, res) => {
       `
       SELECT
         CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
-        ii.fabric_type,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         SUM(
@@ -251,11 +250,10 @@ export const getOwnerDashboard = async (req, res) => {
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at >= :dateStart
         AND inv.created_at <= :dateEnd
         AND inv.status = 'Paid'
-      GROUP BY it.fabric_type, it.color, ii.fabric_type
+      GROUP BY it.fabric_type, it.color
       ORDER BY revenue DESC
     `,
       {
@@ -592,15 +590,13 @@ export const getManagerDashboard = async (req, res) => {
         `
         SELECT
           CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
-          ii.fabric_type,
           it.fabric_type,
           SUM(it.total_price) AS revenue,
           COUNT(it.id) AS quantity
         FROM "${schema}".invoice_items it
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-        INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
         WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-        GROUP BY ii.id, ii.item_name, it.fabric_type, it.color, ii.fabric_type
+        GROUP BY it.fabric_type, it.color
         ORDER BY revenue DESC
       `,
         {
@@ -991,15 +987,13 @@ export const getSalesmanDashboard = async (req, res) => {
       `
       SELECT
         CONCAT(it.fabric_type, ' · ', COALESCE(it.color, '')) AS name,
-        ii.fabric_type,
         it.fabric_type,
         SUM(it.total_price) AS revenue,
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, it.fabric_type, it.color, ii.fabric_type
+      GROUP BY it.fabric_type, it.color
       ORDER BY revenue DESC
     `,
       {
