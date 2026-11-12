@@ -11,6 +11,7 @@ import Customer from "../customers/customer.model.js";
 import User from "../auth/user.model.js";
 import Branch from "../store/branch.model.js";
 import logger from "../../utils/logger.js";
+import { shouldRearmAlert } from "../../utils/lowStock.js";
 import { applyRefundToStock } from "../../utils/stock.js";
 import { invalidateDashboardCache } from "../../utils/dashboard-cache.js";
 
@@ -286,6 +287,9 @@ export const createRefund = async (req, res) => {
         invItem.length_m = restored.length_m;
         if (invItem.status !== "In Stock" && restored.quantity > 0) {
           invItem.status = "In Stock";
+        }
+        if (shouldRearmAlert(invItem)) {
+          invItem.alert_dismissed_at = null;
         }
         await invItem.save({ transaction: t });
       }

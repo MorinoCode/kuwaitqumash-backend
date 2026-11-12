@@ -7,6 +7,7 @@ import { generateUniqueBarcode } from "../../utils/barcode.js";
 import { normalizeToLatinDigits } from "../../utils/normalizeNumbers.js";
 import logger from "../../utils/logger.js";
 import { invalidateDashboardCache } from "../../utils/dashboard-cache.js";
+import { shouldRearmAlert } from "../../utils/lowStock.js";
 
 export const addItem = async (req, res) => {
   try {
@@ -524,9 +525,20 @@ export const updateItem = async (req, res) => {
     const newMinLevel =
       updateData.min_stock_level !== undefined &&
       updateData.min_stock_level !== null
-        ? parseInt(updateData.min_stock_level, 10)
-        : item.min_stock_level;
-    if (newQty > newMinLevel && item.alert_dismissed_at) {
+        ? Number(updateData.min_stock_level)
+        : Number(item.min_stock_level);
+    const newLength =
+      updateData.length_m !== undefined && updateData.length_m !== null
+        ? Number(updateData.length_m)
+        : Number(item.length_m);
+    if (
+      shouldRearmAlert({
+        length_m: newLength,
+        quantity: newQty,
+        min_stock_level: newMinLevel,
+        alert_dismissed_at: item.alert_dismissed_at,
+      })
+    ) {
       updateData.alert_dismissed_at = null;
     }
 

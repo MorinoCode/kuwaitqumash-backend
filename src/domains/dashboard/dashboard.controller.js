@@ -8,6 +8,7 @@ import Branch from "../store/branch.model.js";
 import Customer from "../customers/customer.model.js";
 import WhatsappConfig from "../platform/whatsapp.config.model.js";
 import logger from "../../utils/logger.js";
+import { LOW_STOCK_SQL, totalStockMeters } from "../../utils/lowStock.js";
 import { cacheGet, cacheSet } from "../../config/redis.js";
 
 const DASHBOARD_CACHE_TTL_SECONDS = Number(process.env.DASHBOARD_CACHE_TTL_SECONDS) || 300;
@@ -355,13 +356,14 @@ export const getOwnerDashboard = async (req, res) => {
     const lowStockItems = await InventoryItem.schema(schema).findAll({
       where: {
         status: "In Stock",
-        quantity: { [Op.lte]: Sequelize.col("min_stock_level") },
+        [Op.and]: Sequelize.literal(LOW_STOCK_SQL),
         alert_dismissed_at: null,
       },
       attributes: [
         "id",
         "item_name",
         "pattern",
+        "length_m",
         "quantity",
         "min_stock_level",
       ],
@@ -414,6 +416,7 @@ export const getOwnerDashboard = async (req, res) => {
           name: i.item_name,
           pattern: i.pattern,
           quantity: i.quantity,
+          stock_meters: totalStockMeters(i),
           min_stock_level: i.min_stock_level,
         })),
       },
@@ -545,13 +548,14 @@ export const getManagerDashboard = async (req, res) => {
         where: {
           branch_id: branchId,
           status: "In Stock",
-          quantity: { [Op.lte]: Sequelize.col("min_stock_level") },
+          [Op.and]: Sequelize.literal(LOW_STOCK_SQL),
           alert_dismissed_at: null,
         },
         attributes: [
           "id",
           "item_name",
           "pattern",
+          "length_m",
           "quantity",
           "min_stock_level",
         ],
@@ -866,6 +870,7 @@ export const getManagerDashboard = async (req, res) => {
           name: i.item_name,
           pattern: i.pattern,
           quantity: i.quantity,
+          stock_meters: totalStockMeters(i),
           min_stock_level: i.min_stock_level,
         })),
       },
