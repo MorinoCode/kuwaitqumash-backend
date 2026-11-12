@@ -57,6 +57,7 @@ import dashboardRoutes from "./domains/dashboard/dashboard.routes.js";
 
 import Tenant from "./domains/platform/tenant.model.js";
 import WhatsappConfig from "./domains/platform/whatsapp.config.model.js";
+import ContactMessage from "./domains/platform/contact-message.model.js";
 import Customer from "./domains/customers/customer.model.js";
 import User from "./domains/auth/user.model.js";
 import Branch from "./domains/store/branch.model.js";
@@ -348,6 +349,7 @@ const startServer = async () => {
     await sequelize.query("SET search_path TO public");
     await Tenant.sync({ alter: true });
     await WhatsappConfig.sync({ alter: true });
+    await ContactMessage.sync({ alter: true });
     logger.info("Platform tables synced (public schema)", {
       component: "startup",
     });

@@ -44,6 +44,26 @@ export const registerBody = z
   })
   .strict();
 
+export const contactMessageBody = z
+  .object({
+    name: z
+      .string()
+      .min(2, "Name must be at least 2 characters.")
+      .max(100)
+      .transform((s) => s.trim()),
+    contact: z
+      .string()
+      .min(5, "A phone number or email is required.")
+      .max(150)
+      .transform((s) => s.trim()),
+    message: z
+      .string()
+      .min(5, "Message must be at least 5 characters.")
+      .max(2000)
+      .transform((s) => s.trim()),
+  })
+  .strict();
+
 export const whatsappBulkBody = z
   .object({
     segment: z.enum([

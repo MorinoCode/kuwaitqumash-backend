@@ -176,6 +176,23 @@ export const signupRateLimit = async (req, res, next) => {
   next();
 };
 
+export const contactRateLimit = async (req, res, next) => {
+  const ip = req.ip || req.connection.remoteAddress || "unknown";
+  const isProduction = process.env.NODE_ENV === "production";
+  const maxAttempts = isProduction ? 5 : 30;
+  const windowMs = isProduction ? 60 * 60 * 1000 : 15 * 60 * 1000;
+
+  const check = await bumpCounter("contact", ip, maxAttempts, windowMs);
+
+  if (check.limited) {
+    return res.status(429).json({
+      message: `Too many messages sent. Please try again in ${check.remainingMinutes} minute(s).`,
+    });
+  }
+
+  next();
+};
+
 export const qrRateLimit = async (req, res, next) => {
 
   const ip = req.ip || req.connection.remoteAddress || "unknown";

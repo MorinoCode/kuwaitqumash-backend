@@ -1,6 +1,67 @@
 import Tenant from "./tenant.model.js";
+import ContactMessage from "./contact-message.model.js";
 import { createTenantSchema } from "../../utils/schema.manager.js";
 import logger from "../../utils/logger.js";
+
+export const submitContactMessage = async (req, res) => {
+  try {
+    const { name, contact, message } = req.body;
+
+    const saved = await ContactMessage.create({ name, contact, message });
+
+    res.status(201).json({
+      success: true,
+      message: "Message received",
+      data: { id: saved.id },
+    });
+  } catch (error) {
+    logger.error("Contact message error", {
+      component: "platform",
+      error: error?.message,
+      stack: error?.stack,
+    });
+    res.status(500).json({ message: "Failed to send your message. Please try again." });
+  }
+};
+
+export const listContactMessages = async (req, res) => {
+  try {
+    const messages = await ContactMessage.findAll({
+      order: [
+        ["created_at", "DESC"],
+        ["id", "DESC"],
+      ],
+      limit: 200,
+    });
+
+    res.json({ success: true, data: messages });
+  } catch (error) {
+    logger.error("List contact messages error", {
+      component: "platform",
+      error: error?.message,
+      stack: error?.stack,
+    });
+    res.status(500).json({ message: "Failed to load messages." });
+  }
+};
+
+export const markContactMessageRead = async (req, res) => {
+  try {
+    const message = await ContactMessage.findByPk(req.params.id);
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    await message.update({ status: "read" });
+
+    res.json({ success: true, data: message });
+  } catch (error) {
+    logger.error("Mark contact message read error", {
+      component: "platform",
+      error: error?.message,
+      stack: error?.stack,
+    });
+    res.status(500).json({ message: "Failed to update the message." });
+  }
+};
 
 export const registerStore = async (req, res) => {
   try {
