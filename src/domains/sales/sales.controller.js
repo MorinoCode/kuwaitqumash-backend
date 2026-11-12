@@ -1145,6 +1145,7 @@ export const downloadSalesExcel = async (req, res) => {
       filename,
       fetchPage,
       totalCount,
+      lang: req.query.lang || req.headers["accept-language"] || "fa",
     });
 
     logger.info("Sales excel streamed", {

@@ -1491,19 +1491,74 @@ export const generateCreditNotePDF = async (
   return { buffer };
 };
 
-const SALES_EXCEL_COLUMNS = [
-  { header: "Date", key: "date", width: 15 },
-  { header: "Time", key: "time", width: 10 },
-  { header: "Invoice #", key: "inv", width: 25 },
-  { header: "Branch", key: "branch", width: 15 },
-  { header: "Seller", key: "seller", width: 20 },
-  { header: "Customer Name", key: "cust_name", width: 25 },
-  { header: "Phone", key: "phone", width: 15 },
-  { header: "Address", key: "address", width: 25 },
-  { header: "Total Weight (g)", key: "meters", width: 18 },
-  { header: "Total Amount (KD)", key: "amount", width: 18 },
-  { header: "Payment Method", key: "payment", width: 25 },
+// A fabric shop sells by the metre, so the report is labelled for fabric and not
+// with the gold-shop "weight in grams" wording it used to carry.
+const SALES_EXCEL_HEADERS = {
+  fa: [
+    "تاریخ",
+    "ساعت",
+    "شماره فاکتور",
+    "شعبه",
+    "فروشنده",
+    "نام مشتری",
+    "تلفن",
+    "آدرس",
+    "متراژ کل (متر)",
+    "مبلغ کل (دینار)",
+    "روش پرداخت",
+  ],
+  ar: [
+    "التاريخ",
+    "الوقت",
+    "رقم الفاتورة",
+    "الفرع",
+    "البائع",
+    "اسم العميل",
+    "الهاتف",
+    "العنوان",
+    "إجمالي الأمتار (متر)",
+    "المبلغ الإجمالي (د.ك)",
+    "طريقة الدفع",
+  ],
+  en: [
+    "Date",
+    "Time",
+    "Invoice #",
+    "Branch",
+    "Seller",
+    "Customer Name",
+    "Phone",
+    "Address",
+    "Total Meters (m)",
+    "Total Amount (KD)",
+    "Payment Method",
+  ],
+};
+
+const SALES_EXCEL_KEYS = [
+  { key: "date", width: 15 },
+  { key: "time", width: 10 },
+  { key: "inv", width: 25 },
+  { key: "branch", width: 15 },
+  { key: "seller", width: 20 },
+  { key: "cust_name", width: 25 },
+  { key: "phone", width: 15 },
+  { key: "address", width: 25 },
+  { key: "meters", width: 18 },
+  { key: "amount", width: 18 },
+  { key: "payment", width: 25 },
 ];
+
+const buildSalesExcelColumns = (lang) => {
+  const headers =
+    SALES_EXCEL_HEADERS[String(lang || "fa").slice(0, 2)] ||
+    SALES_EXCEL_HEADERS.fa;
+  return SALES_EXCEL_KEYS.map((col, i) => ({
+    header: headers[i],
+    key: col.key,
+    width: col.width,
+  }));
+};
 
 const buildSalesExcelRow = (inv) => {
   const invDate = new Date(inv.createdAt);
@@ -1540,6 +1595,7 @@ export const streamSalesExcel = async ({
   fetchPage,
   totalCount,
   pageSize = 1000,
+  lang = "fa",
 }) => {
   res.setHeader(
     "Content-Type",
@@ -1556,7 +1612,7 @@ export const streamSalesExcel = async ({
     useSharedStrings: false,
   });
   const worksheet = workbook.addWorksheet("Sales");
-  worksheet.columns = SALES_EXCEL_COLUMNS;
+  worksheet.columns = buildSalesExcelColumns(lang);
 
   let written = 0;
   for (let offset = 0; offset < totalCount; offset += pageSize) {
@@ -1574,22 +1630,10 @@ export const streamSalesExcel = async ({
   return written;
 };
 
-export const generateSalesExcelBuffer = async (invoices) => {
+export const generateSalesExcelBuffer = async (invoices, lang = "fa") => {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet("Sales");
-  worksheet.columns = [
-    { header: "Date", key: "date", width: 15 },
-    { header: "Time", key: "time", width: 10 },
-    { header: "Invoice #", key: "inv", width: 25 },
-    { header: "Branch", key: "branch", width: 15 },
-    { header: "Seller", key: "seller", width: 20 },
-    { header: "Customer Name", key: "cust_name", width: 25 },
-    { header: "Phone", key: "phone", width: 15 },
-    { header: "Address", key: "address", width: 25 },
-    { header: "Total Weight (g)", key: "meters", width: 18 },
-    { header: "Total Amount (KD)", key: "amount", width: 18 },
-    { header: "Payment Method", key: "payment", width: 25 },
-  ];
+  worksheet.columns = buildSalesExcelColumns(lang);
   for (const inv of invoices) {
     const invDate = new Date(inv.createdAt);
     const pays = inv.payments || [];
