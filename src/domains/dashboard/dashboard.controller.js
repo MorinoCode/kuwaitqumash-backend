@@ -53,7 +53,8 @@ export const getOwnerDashboard = async (req, res) => {
       requestId: req.requestId,
     });
 
-    const todayStart = dateFilterStart || new Date();
+    const todayStart =
+      dateFilterStart || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     if (!dateFilterStart) {
       todayStart.setHours(0, 0, 0, 0);
     }
@@ -462,7 +463,8 @@ export const getManagerDashboard = async (req, res) => {
       requestId: req.requestId,
     });
 
-    const todayStart = dateFilterStart || new Date();
+    const todayStart =
+      dateFilterStart || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     if (!dateFilterStart) {
       todayStart.setHours(0, 0, 0, 0);
     }
