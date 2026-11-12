@@ -389,7 +389,7 @@ const startServer = async () => {
           }
         );
 
-        const existingTableCount = tableCheck?.[0]?.table_count || 0;
+        const existingTableCount = tableCheck?.table_count || 0;
 
         if (existingTableCount === 0) {
 

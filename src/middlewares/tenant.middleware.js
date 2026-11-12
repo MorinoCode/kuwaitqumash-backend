@@ -42,7 +42,7 @@ const ensureTenantTables = async (schemaName) => {
       },
     );
 
-    const existingTableCount = tableCheck?.[0]?.table_count || 0;
+    const existingTableCount = tableCheck?.table_count || 0;
 
     const [refundCheck] = await sequelize.query(
       `SELECT EXISTS (
@@ -51,7 +51,7 @@ const ensureTenantTables = async (schemaName) => {
       ) AS exists`,
       { bind: [schemaName], type: sequelize.QueryTypes.SELECT }
     );
-    const hasRefundTables = refundCheck?.[0]?.exists === true;
+    const hasRefundTables = refundCheck?.exists === true;
 
     if (existingTableCount < 4 || !hasRefundTables) {
 
