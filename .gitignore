@@ -53,3 +53,6 @@ scripts/*
 graphify-out/
 .git.pre-kuwaitqumash/
 .env
+
+# temporary local postgres cluster used for local runs
+.tmp-pgdata/
