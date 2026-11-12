@@ -1491,6 +1491,89 @@ export const generateCreditNotePDF = async (
   return { buffer };
 };
 
+const SALES_EXCEL_COLUMNS = [
+  { header: "Date", key: "date", width: 15 },
+  { header: "Time", key: "time", width: 10 },
+  { header: "Invoice #", key: "inv", width: 25 },
+  { header: "Branch", key: "branch", width: 15 },
+  { header: "Seller", key: "seller", width: 20 },
+  { header: "Customer Name", key: "cust_name", width: 25 },
+  { header: "Phone", key: "phone", width: 15 },
+  { header: "Address", key: "address", width: 25 },
+  { header: "Total Weight (g)", key: "meters", width: 18 },
+  { header: "Total Amount (KD)", key: "amount", width: 18 },
+  { header: "Payment Method", key: "payment", width: 25 },
+];
+
+const buildSalesExcelRow = (inv) => {
+  const invDate = new Date(inv.createdAt);
+  const pays = inv.payments || [];
+  const paymentStr = pays.length
+    ? pays
+        .map((p) => `${p.method}:${parseFloat(p.amount).toFixed(3)}`)
+        .join(" | ")
+    : "Cash";
+
+  return {
+    date: invDate.toLocaleDateString(),
+    time: invDate.toLocaleTimeString(),
+    inv: inv.invoice_number,
+    branch: (inv.branch && inv.branch.name) || "Main",
+    seller: (inv.creator && inv.creator.full_name) || "Admin",
+    cust_name: (inv.customer && inv.customer.full_name) || "-",
+    phone: (inv.customer && inv.customer.phone) || "-",
+    address: (inv.customer && inv.customer.address) || "-",
+    meters: parseFloat(inv.total_meters).toFixed(3),
+    amount: parseFloat(inv.total_amount).toFixed(3),
+    payment: paymentStr,
+  };
+};
+
+/**
+ * Writes the sales report straight into the HTTP response in pages.
+ * Rows are committed to a streaming workbook writer, so memory stays flat
+ * instead of holding thousands of invoices plus a full xlsx buffer.
+ */
+export const streamSalesExcel = async ({
+  res,
+  filename,
+  fetchPage,
+  totalCount,
+  pageSize = 1000,
+}) => {
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  );
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${filename}.xlsx"`,
+  );
+
+  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+    stream: res,
+    useStyles: false,
+    useSharedStrings: false,
+  });
+  const worksheet = workbook.addWorksheet("Sales");
+  worksheet.columns = SALES_EXCEL_COLUMNS;
+
+  let written = 0;
+  for (let offset = 0; offset < totalCount; offset += pageSize) {
+    const invoices = await fetchPage(pageSize, offset);
+    if (!invoices || invoices.length === 0) break;
+
+    for (const inv of invoices) {
+      worksheet.addRow(buildSalesExcelRow(inv)).commit();
+      written += 1;
+    }
+  }
+
+  worksheet.commit();
+  await workbook.commit();
+  return written;
+};
+
 export const generateSalesExcelBuffer = async (invoices) => {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet("Sales");

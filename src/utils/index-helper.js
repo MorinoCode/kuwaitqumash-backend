@@ -51,6 +51,44 @@ const getIndexDefinitions = () => [
   },
   { name: "idx_invoices_status", table: "invoices", columns: ["status"] },
 
+  // Composite indexes for the dashboard and invoice-list aggregations:
+  // they filter/group by branch + date range and join invoice_items by invoice.
+  {
+    name: "idx_invoices_branch_created",
+    table: "invoices",
+    columns: ["branch_id", "created_at"],
+  },
+  {
+    name: "idx_invoices_status_created",
+    table: "invoices",
+    columns: ["status", "created_at"],
+  },
+  {
+    name: "idx_invoices_customer_created",
+    table: "invoices",
+    columns: ["customer_id", "created_at"],
+  },
+  {
+    name: "idx_invoice_items_invoice_inventory",
+    table: "invoice_items",
+    columns: ["invoice_id", "inventory_item_id"],
+  },
+  {
+    name: "idx_invoice_items_inventory",
+    table: "invoice_items",
+    columns: ["inventory_item_id"],
+  },
+  {
+    name: "idx_customers_branch_created",
+    table: "customers",
+    columns: ["branch_id", "created_at"],
+  },
+  {
+    name: "idx_refunds_branch_created",
+    table: "refunds",
+    columns: ["branch_id", "created_at"],
+  },
+
   { name: "idx_refunds_invoice", table: "refunds", columns: ["invoice_id"] },
   { name: "idx_refunds_branch", table: "refunds", columns: ["branch_id"] },
   { name: "idx_refunds_created_at", table: "refunds", columns: ["created_at"] },

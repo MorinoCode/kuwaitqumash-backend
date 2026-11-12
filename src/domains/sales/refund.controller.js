@@ -12,6 +12,7 @@ import User from "../auth/user.model.js";
 import Branch from "../store/branch.model.js";
 import logger from "../../utils/logger.js";
 import { applyRefundToStock } from "../../utils/stock.js";
+import { invalidateDashboardCache } from "../../utils/dashboard-cache.js";
 
 export const getInvoiceForRefund = async (req, res) => {
   try {
@@ -320,6 +321,7 @@ export const createRefund = async (req, res) => {
     }
 
     await t.commit();
+    await invalidateDashboardCache(req.tenant.slug);
 
     const fullRefund = await Refund.schema(schema).findByPk(refund.id, {
       include: [

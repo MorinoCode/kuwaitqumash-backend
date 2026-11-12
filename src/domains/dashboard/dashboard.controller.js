@@ -10,6 +10,8 @@ import WhatsappConfig from "../platform/whatsapp.config.model.js";
 import logger from "../../utils/logger.js";
 import { cacheGet, cacheSet } from "../../config/redis.js";
 
+const DASHBOARD_CACHE_TTL_SECONDS = Number(process.env.DASHBOARD_CACHE_TTL_SECONDS) || 300;
+
 export const getOwnerDashboard = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
@@ -69,88 +71,121 @@ export const getOwnerDashboard = async (req, res) => {
     monthStart.setDate(monthStart.getDate() - 30);
     monthStart.setHours(0, 0, 0, 0);
 
-    const invoicesToday = await Invoice.schema(schema).findAll({
-      where: {
-        createdAt: { [Op.between]: [todayStart, todayEnd] },
-        status: "Paid",
+    // Aggregations run inside PostgreSQL: loading every invoice row (and its
+    // items) into Node was the main cost and memory spike of this endpoint.
+    const [periodTotals = {}] = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(inv.total_amount), 0) AS total_sales,
+        COALESCE(SUM(inv.total_meters), 0) AS total_meters,
+        COUNT(*)::int AS invoice_count
+      FROM "${schema}".invoices inv
+      WHERE inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
+        AND inv.status = 'Paid'
+      `,
+      {
+        replacements: { dateStart: todayStart, dateEnd: todayEnd },
+        type: sequelize.QueryTypes.SELECT,
       },
-      include: [{ model: InvoiceItem.schema(schema), as: "items" }],
-    });
+    );
 
-    let totalSalesToday = 0;
-    let totalMetersToday = 0;
-    let totalCostToday = 0;
-    const fabricTotals = new Map();
+    const totalSalesToday = parseFloat(periodTotals.total_sales || 0);
+    const totalMetersToday = parseFloat(periodTotals.total_meters || 0);
+    const invoiceCountToday = parseInt(periodTotals.invoice_count || 0, 10);
 
-    invoicesToday.forEach((inv) => {
-      totalSalesToday += parseFloat(inv.total_amount || 0);
-      totalMetersToday += parseFloat(inv.total_meters || 0);
+    const [periodCost = {}] = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(
+          COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)
+        ), 0) AS total_cost
+      FROM "${schema}".invoice_items it
+      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+      WHERE inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
+        AND inv.status = 'Paid'
+      `,
+      {
+        replacements: { dateStart: todayStart, dateEnd: todayEnd },
+        type: sequelize.QueryTypes.SELECT,
+      },
+    );
+    const totalCostToday = parseFloat(periodCost.total_cost || 0);
 
-      inv.items.forEach((item) => {
-        const lineMeters =
-          parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
-        const costPerMeter = parseFloat(item.cost_per_meter_snapshot || 0);
-        const lineRevenue = parseFloat(item.total_price || 0);
-        totalCostToday += lineMeters * costPerMeter;
+    const topFabricRows = await sequelize.query(
+      `
+      SELECT
+        it.fabric_type AS name,
+        SUM(COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)) AS meters,
+        SUM(it.total_price) AS revenue,
+        SUM(it.total_price) - SUM(
+          COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)
+        ) AS profit
+      FROM "${schema}".invoice_items it
+      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+      WHERE inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
+        AND inv.status = 'Paid'
+      GROUP BY it.fabric_type
+      ORDER BY revenue DESC
+      LIMIT 5
+      `,
+      {
+        replacements: { dateStart: todayStart, dateEnd: todayEnd },
+        type: sequelize.QueryTypes.SELECT,
+      },
+    );
 
-        const key = item.fabric_type || "Other";
-        const current = fabricTotals.get(key) || {
-          name: key,
-          meters: 0,
-          revenue: 0,
-          profit: 0,
-        };
-        current.meters += lineMeters;
-        current.revenue += lineRevenue;
-        current.profit += lineRevenue - lineMeters * costPerMeter;
-        fabricTotals.set(key, current);
-      });
-    });
-
-    const topFabrics = Array.from(fabricTotals.values())
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 5)
-      .map((fabric) => ({
-        name: fabric.name,
-        fabric_type: fabric.name,
-        meters: Math.round(fabric.meters * 1000) / 1000,
-        revenue: Math.round(fabric.revenue * 1000) / 1000,
-        profit: Math.round(fabric.profit * 1000) / 1000,
-      }));
+    const round3 = (value) => Math.round(parseFloat(value || 0) * 1000) / 1000;
+    const topFabrics = topFabricRows.map((fabric) => ({
+      name: fabric.name || "Other",
+      fabric_type: fabric.name || "Other",
+      meters: round3(fabric.meters),
+      revenue: round3(fabric.revenue),
+      profit: round3(fabric.profit),
+    }));
 
     const netProfitToday = totalSalesToday - totalCostToday;
     const avgSaleValue =
-      invoicesToday.length > 0 ? totalSalesToday / invoicesToday.length : 0;
+      invoiceCountToday > 0 ? totalSalesToday / invoiceCountToday : 0;
 
-    const monthInvoices = await Invoice.schema(schema).findAll({
-      where: {
-        createdAt: { [Op.gte]: monthStart },
-        status: "Paid",
+    const [monthTotals = {}] = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(inv.total_amount), 0) AS month_sales,
+        COALESCE(SUM(inv.total_meters), 0) AS month_meters,
+        COUNT(*)::int AS month_invoices
+      FROM "${schema}".invoices inv
+      WHERE inv.created_at >= :monthStart
+        AND inv.status = 'Paid'
+      `,
+      {
+        replacements: { monthStart },
+        type: sequelize.QueryTypes.SELECT,
       },
-      attributes: ["total_amount", "total_meters"],
-    });
-    const monthSales = monthInvoices.reduce(
-      (sum, inv) => sum + parseFloat(inv.total_amount || 0),
-      0,
     );
-    const monthMeters = monthInvoices.reduce(
-      (sum, inv) => sum + parseFloat(inv.total_meters || 0),
-      0,
+    const monthSales = parseFloat(monthTotals.month_sales || 0);
+    const monthMeters = parseFloat(monthTotals.month_meters || 0);
+    const monthInvoiceCount = parseInt(monthTotals.month_invoices || 0, 10);
+
+    const [inventoryTotals = {}] = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(
+          COALESCE(length_m, 0) * COALESCE(cost_per_meter, 0) * COALESCE(quantity, 1)
+        ), 0) AS total_inventory_value
+      FROM "${schema}".inventory_items
+      WHERE status = 'In Stock'
+      `,
+      {
+        replacements: {},
+        type: sequelize.QueryTypes.SELECT,
+      },
     );
-
-    const inventoryItems = await InventoryItem.schema(schema).findAll({
-      where: { status: "In Stock" },
-      attributes: ["length_m", "cost_per_meter", "quantity"],
-    });
-
-    let totalInventoryValue = 0;
-    inventoryItems.forEach((item) => {
-      const value =
-        parseFloat(item.length_m || 0) *
-        parseFloat(item.cost_per_meter || 0) *
-        parseInt(item.quantity || 1);
-      totalInventoryValue += value;
-    });
+    const totalInventoryValue = parseFloat(
+      inventoryTotals.total_inventory_value || 0,
+    );
 
     const activeBranches = await Branch.schema(schema).count();
 
@@ -339,10 +374,10 @@ export const getOwnerDashboard = async (req, res) => {
         total_sales: totalSalesToday.toFixed(3),
         net_profit: netProfitToday.toFixed(3),
         total_meters: totalMetersToday.toFixed(3),
-        invoice_count: invoicesToday.length,
+        invoice_count: invoiceCountToday,
         avg_sale_value: avgSaleValue.toFixed(3),
         month_sales: monthSales.toFixed(3),
-        month_invoices: monthInvoices.length,
+        month_invoices: monthInvoiceCount,
         month_meters: monthMeters.toFixed(3),
         total_inventory_value: totalInventoryValue.toFixed(3),
         active_branches: activeBranches,
@@ -386,7 +421,7 @@ export const getOwnerDashboard = async (req, res) => {
       last_updated: new Date().toISOString(),
     };
 
-    await cacheSet(cacheKey, dashboardData, 60);
+    await cacheSet(cacheKey, dashboardData, DASHBOARD_CACHE_TTL_SECONDS);
 
     res.json({
       success: true,
@@ -432,22 +467,20 @@ export const getManagerDashboard = async (req, res) => {
 
     const cacheKey = `dashboard:manager:${req.tenant.slug}:${branchId}:${startDate || "today"}:${endDate || "today"}`;
 
-    if (!startDate && !endDate) {
-      const dashboardData = await cacheGet(cacheKey);
-      if (dashboardData) {
-        logger.info("Manager dashboard served from cache", {
-          component: "dashboard",
-          tenant: req.tenant.slug,
-          branchId,
-          requestId: req.requestId,
-        });
-        return res.json({
-          success: true,
-          data: {
-            ...dashboardData,
-          },
-        });
-      }
+    const cachedManagerDashboard = await cacheGet(cacheKey);
+    if (cachedManagerDashboard) {
+      logger.info("Manager dashboard served from cache", {
+        component: "dashboard",
+        tenant: req.tenant.slug,
+        branchId,
+        requestId: req.requestId,
+      });
+      return res.json({
+        success: true,
+        data: {
+          ...cachedManagerDashboard,
+        },
+      });
     }
 
     logger.info("Manager dashboard fetching from database", {
@@ -478,7 +511,7 @@ export const getManagerDashboard = async (req, res) => {
     monthStart.setHours(0, 0, 0, 0);
 
     const [
-      branchInvoicesToday,
+      branchTotalsRows,
       lowStockItems,
       salesTrend7Days,
       salesTrend30Days,
@@ -491,14 +524,23 @@ export const getManagerDashboard = async (req, res) => {
       topCustomers,
     ] = await Promise.all([
 
-      Invoice.schema(schema).findAll({
-        where: {
-          branch_id: branchId,
-          createdAt: { [Op.between]: [todayStart, todayEnd] },
-          status: "Paid",
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(inv.total_amount), 0) AS total_sales,
+          COALESCE(SUM(inv.total_meters), 0) AS total_meters,
+          COUNT(*)::int AS invoice_count
+        FROM "${schema}".invoices inv
+        WHERE inv.branch_id = :branchId
+          AND inv.created_at >= :dateStart
+          AND inv.created_at <= :dateEnd
+          AND inv.status = 'Paid'
+        `,
+        {
+          replacements: { branchId, dateStart: todayStart, dateEnd: todayEnd },
+          type: sequelize.QueryTypes.SELECT,
         },
-        include: [{ model: InvoiceItem.schema(schema), as: "items" }],
-      }),
+      ),
 
       InventoryItem.schema(schema).findAll({
         where: {
@@ -736,33 +778,41 @@ export const getManagerDashboard = async (req, res) => {
       }),
     ]);
 
-    let branchSalesToday = 0;
-    let totalMetersToday = 0;
-    let totalCostToday = 0;
+    const [branchTotals = {}] = branchTotalsRows;
+    const branchSalesToday = parseFloat(branchTotals.total_sales || 0);
+    const totalMetersToday = parseFloat(branchTotals.total_meters || 0);
+    const branchInvoiceCount = parseInt(branchTotals.invoice_count || 0, 10);
 
-    branchInvoicesToday.forEach((inv) => {
-      branchSalesToday += parseFloat(inv.total_amount || 0);
-      totalMetersToday += parseFloat(inv.total_meters || 0);
-      inv.items.forEach((item) => {
-        const lineMeters =
-          parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
-        const costPerMeter = parseFloat(item.cost_per_meter_snapshot || 0);
-        totalCostToday += lineMeters * costPerMeter;
-      });
-    });
+    const [branchCost = {}] = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(
+          COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)
+        ), 0) AS total_cost
+      FROM "${schema}".invoice_items it
+      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+      WHERE inv.branch_id = :branchId
+        AND inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
+        AND inv.status = 'Paid'
+      `,
+      {
+        replacements: { branchId, dateStart: todayStart, dateEnd: todayEnd },
+        type: sequelize.QueryTypes.SELECT,
+      },
+    );
+    const totalCostToday = parseFloat(branchCost.total_cost || 0);
 
     const netProfitToday = branchSalesToday - totalCostToday;
     const avgSaleValue =
-      branchInvoicesToday.length > 0
-        ? branchSalesToday / branchInvoicesToday.length
-        : 0;
+      branchInvoiceCount > 0 ? branchSalesToday / branchInvoiceCount : 0;
 
     const dashboardData = {
       kpi: {
         branch_sales: branchSalesToday.toFixed(3),
         net_profit: netProfitToday.toFixed(3),
         total_meters: totalMetersToday.toFixed(3),
-        invoice_count: branchInvoicesToday.length,
+        invoice_count: branchInvoiceCount,
         avg_sale_value: avgSaleValue.toFixed(3),
         low_stock_count: lowStockItems.length,
       },
@@ -824,7 +874,7 @@ export const getManagerDashboard = async (req, res) => {
       last_updated: new Date().toISOString(),
     };
 
-    await cacheSet(cacheKey, dashboardData, 60);
+    await cacheSet(cacheKey, dashboardData, DASHBOARD_CACHE_TTL_SECONDS);
 
     res.json({
       success: true,
@@ -885,24 +935,42 @@ export const getSalesmanDashboard = async (req, res) => {
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - 7);
 
-    const invoicesToday = await Invoice.schema(schema).findAll({
-      where: {
-        created_by: userId,
-        createdAt: { [Op.gte]: todayStart },
-        status: "Paid",
+    const [myTotals = {}] = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(inv.total_amount), 0) AS my_sales_today,
+        COUNT(*)::int AS invoice_count
+      FROM "${schema}".invoices inv
+      WHERE inv.created_by = :userId
+        AND inv.created_at >= :todayStart
+        AND inv.status = 'Paid'
+      `,
+      {
+        replacements: { userId, todayStart },
+        type: sequelize.QueryTypes.SELECT,
       },
-      include: [{ model: InvoiceItem.schema(schema), as: "items" }],
-    });
+    );
 
-    let mySalesToday = 0;
-    let itemsSoldCount = 0;
-    invoicesToday.forEach((inv) => {
-      mySalesToday += parseFloat(inv.total_amount || 0);
-      itemsSoldCount += inv.items.length;
-    });
+    const [itemsTotals = {}] = await sequelize.query(
+      `
+      SELECT COUNT(*)::int AS items_sold
+      FROM "${schema}".invoice_items it
+      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+      WHERE inv.created_by = :userId
+        AND inv.created_at >= :todayStart
+        AND inv.status = 'Paid'
+      `,
+      {
+        replacements: { userId, todayStart },
+        type: sequelize.QueryTypes.SELECT,
+      },
+    );
 
+    const mySalesToday = parseFloat(myTotals.my_sales_today || 0);
+    const myInvoiceCount = parseInt(myTotals.invoice_count || 0, 10);
+    const itemsSoldCount = parseInt(itemsTotals.items_sold || 0, 10);
     const avgSaleValue =
-      invoicesToday.length > 0 ? mySalesToday / invoicesToday.length : 0;
+      myInvoiceCount > 0 ? mySalesToday / myInvoiceCount : 0;
 
     const salesTrend7Days = await Invoice.schema(schema).findAll({
       where: {
@@ -1017,7 +1085,7 @@ export const getSalesmanDashboard = async (req, res) => {
       last_updated: new Date().toISOString(),
     };
 
-    await cacheSet(cacheKey, dashboardData, 60);
+    await cacheSet(cacheKey, dashboardData, DASHBOARD_CACHE_TTL_SECONDS);
 
     res.json({
       success: true,

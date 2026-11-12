@@ -11,7 +11,7 @@ import logger from "../../utils/logger.js";
 import { applySaleToStock } from "../../utils/stock.js";
 import {
   generateInvoicePDF,
-  generateSalesExcelBuffer,
+  streamSalesExcel,
 } from "../../utils/invoiceGenerator.js";
 import {
   sendInvoicePDF,
@@ -19,6 +19,7 @@ import {
 } from "../../utils/whatsapp.service.js";
 import { Op } from "sequelize";
 import Branch from "../store/branch.model.js";
+import { invalidateDashboardCache } from "../../utils/dashboard-cache.js";
 
 export const createSale = async (req, res) => {
 
@@ -281,6 +282,7 @@ export const createSale = async (req, res) => {
     }
 
     await t.commit();
+    await invalidateDashboardCache(req.tenant.slug);
 
     newInvoice.payments = payments;
     let pdfResult = {};
@@ -1094,26 +1096,40 @@ export const downloadSalesExcel = async (req, res) => {
       whereClause.createdAt = dateRange;
     }
 
-    const invoices = await Invoice.schema(schema).findAll({
+    const MAX_EXPORT_ROWS = Number(process.env.SALES_EXCEL_MAX_ROWS) || 20000;
+    const totalCount = await Invoice.schema(schema).count({
       where: whereClause,
-      include: [
-        {
-          model: Customer.schema(schema),
-          as: "customer",
-          attributes: ["full_name", "phone", "address", "type"],
-        },
-        {
-          model: User.schema(schema),
-          as: "creator",
-          attributes: ["full_name"],
-        },
-        { model: InvoicePayment.schema(schema), as: "payments" },
-      ],
-      order: [["createdAt", "DESC"]],
-      limit: 10000,
     });
 
-    const excelBuffer = await generateSalesExcelBuffer(invoices);
+    if (totalCount > MAX_EXPORT_ROWS) {
+      return res.status(400).json({
+        success: false,
+        message: `This range contains ${totalCount.toLocaleString()} invoices; the Excel export is limited to ${MAX_EXPORT_ROWS.toLocaleString()}. Please narrow the date range.`,
+        total_count: totalCount,
+        max_rows: MAX_EXPORT_ROWS,
+      });
+    }
+
+    const fetchPage = (limit, offset) =>
+      Invoice.schema(schema).findAll({
+        where: whereClause,
+        include: [
+          {
+            model: Customer.schema(schema),
+            as: "customer",
+            attributes: ["full_name", "phone", "address", "type"],
+          },
+          {
+            model: User.schema(schema),
+            as: "creator",
+            attributes: ["full_name"],
+          },
+          { model: InvoicePayment.schema(schema), as: "payments" },
+        ],
+        order: [["createdAt", "DESC"]],
+        limit,
+        offset,
+      });
 
     let filename = "sales-report";
     if (start_date && end_date) {
@@ -1124,21 +1140,31 @@ export const downloadSalesExcel = async (req, res) => {
       filename = `sales-report-until_${end_date}`;
     }
 
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    );
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${filename}.xlsx"`,
-    );
-    res.send(excelBuffer);
+    const written = await streamSalesExcel({
+      res,
+      filename,
+      fetchPage,
+      totalCount,
+    });
+
+    logger.info("Sales excel streamed", {
+      component: "sales",
+      tenant: req.tenant.slug,
+      rows: written,
+      requestId: req.requestId,
+    });
   } catch (error) {
     logger.error("Excel generation error", {
       component: "sales",
       error: error?.message,
       stack: error?.stack,
+      requestId: req.requestId,
     });
+
+    if (res.headersSent) {
+      return res.end();
+    }
+
     res
       .status(500)
       .json({ message: "Excel generation failed. Please try again." });

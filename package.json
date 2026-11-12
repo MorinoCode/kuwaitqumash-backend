@@ -23,6 +23,7 @@
     "db:refund-tables": "node scripts/add-refund-tables.js",
     "db:credit-note": "node scripts/add-credit-note-number.js",
     "fonts:amiri": "node scripts/download-amiri-font.js",
+    "loadtest": "k6 run loadtest/load-test.js",
     "worker": "node workers/dashboard-worker.js",
     "worker:dev": "nodemon workers/dashboard-worker.js",
     "cleanup:whatsapp": "node scripts/cleanup-whatsapp-sessions-gcs.js",
