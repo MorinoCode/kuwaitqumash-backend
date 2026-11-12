@@ -56,3 +56,4 @@ graphify-out/
 
 # temporary local postgres cluster used for local runs
 .tmp-pgdata/
+.tmp-backend.log
