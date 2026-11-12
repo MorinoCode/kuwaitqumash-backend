@@ -44,61 +44,70 @@ const setRateLimitToRedis = async (type, key, value, ttlSeconds) => {
   }
 };
 
-export const loginRateLimit = async (req, res, next) => {
-
-  const ip = req.ip || req.connection.remoteAddress || "unknown";
-  const username = req.body?.username || "unknown";
-  const key = `${ip}:${username}`;
-
+const bumpCounter = async (type, key, maxAttempts, windowMs) => {
   const now = Date.now();
-  const MAX_ATTEMPTS = 5;
-  const WINDOW_MS = 15 * 60 * 1000;
+  const ttl = Math.ceil(windowMs / 1000);
+  const attempt = await getRateLimitFromRedis(type, key);
 
-  let attempt = await getRateLimitFromRedis("login", key);
-
-  if (!attempt) {
-
-    const newAttempt = {
-      count: 1,
-      firstAttempt: now,
-      lastAttempt: now,
-    };
+  if (!attempt || now - attempt.firstAttempt > windowMs) {
     await setRateLimitToRedis(
-      "login",
+      type,
       key,
-      newAttempt,
-      Math.ceil(WINDOW_MS / 1000)
+      { count: 1, firstAttempt: now, lastAttempt: now },
+      ttl
     );
-    return next();
+    return { limited: false };
   }
 
-  if (now - attempt.firstAttempt > WINDOW_MS) {
-    const newAttempt = {
-      count: 1,
-      firstAttempt: now,
-      lastAttempt: now,
+  if (attempt.count >= maxAttempts) {
+    return {
+      limited: true,
+      remainingMinutes: Math.ceil((windowMs - (now - attempt.firstAttempt)) / 1000 / 60),
     };
-    await setRateLimitToRedis(
-      "login",
-      key,
-      newAttempt,
-      Math.ceil(WINDOW_MS / 1000)
-    );
-    return next();
-  }
-
-  if (attempt.count >= MAX_ATTEMPTS) {
-    const remainingTime = Math.ceil(
-      (WINDOW_MS - (now - attempt.firstAttempt)) / 1000 / 60
-    );
-    return res.status(429).json({
-      message: `Too many login attempts. Please try again in ${remainingTime} minute(s).`,
-    });
   }
 
   attempt.count++;
   attempt.lastAttempt = now;
-  await setRateLimitToRedis("login", key, attempt, Math.ceil(WINDOW_MS / 1000));
+  await setRateLimitToRedis(type, key, attempt, ttl);
+  return { limited: false };
+};
+
+export const loginRateLimit = async (req, res, next) => {
+
+  const ip = req.ip || req.connection.remoteAddress || "unknown";
+  const username = String(req.body?.username || "unknown").toLowerCase();
+  const tenantSlug = req.headers["x-tenant-id"] || "unknown";
+
+  const WINDOW_MS = 15 * 60 * 1000;
+  const MAX_ATTEMPTS = 5;
+
+  const ipCheck = await bumpCounter(
+    "login",
+    `${ip}:${tenantSlug}:${username}`,
+    MAX_ATTEMPTS,
+    WINDOW_MS
+  );
+
+  if (ipCheck.limited) {
+    return res.status(429).json({
+      message: `Too many login attempts. Please try again in ${ipCheck.remainingMinutes} minute(s).`,
+    });
+  }
+
+  // Account-level ceiling that does not depend on the client IP, so rotating a
+  // forwarded header cannot make password guessing unlimited.
+  const accountCheck = await bumpCounter(
+    "login_account",
+    `${tenantSlug}:${username}`,
+    50,
+    WINDOW_MS
+  );
+
+  if (accountCheck.limited) {
+    return res.status(429).json({
+      message: `Too many login attempts for this account. Please try again in ${accountCheck.remainingMinutes} minute(s).`,
+    });
+  }
 
   next();
 };

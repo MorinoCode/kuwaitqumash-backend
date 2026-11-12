@@ -130,13 +130,19 @@ export const updateBranch = async (req, res) => {
       }
       updates.name = lowerName;
     }
-    if (whatsapp_invoice_enabled !== undefined)
-      updates.whatsapp_invoice_enabled = whatsapp_invoice_enabled;
-    if (whatsapp_invoice_to_store_enabled !== undefined)
-      updates.whatsapp_invoice_to_store_enabled =
-        whatsapp_invoice_to_store_enabled;
-    if (whatsapp_invoice_to_store_phone !== undefined)
-      updates.whatsapp_invoice_to_store_phone = whatsapp_invoice_to_store_phone;
+    const canManageWhatsappSettings =
+      req.user.role === "store_owner" || req.user.role === "branch_manager";
+
+    if (canManageWhatsappSettings) {
+      if (whatsapp_invoice_enabled !== undefined)
+        updates.whatsapp_invoice_enabled = whatsapp_invoice_enabled;
+      if (whatsapp_invoice_to_store_enabled !== undefined)
+        updates.whatsapp_invoice_to_store_enabled =
+          whatsapp_invoice_to_store_enabled;
+      if (whatsapp_invoice_to_store_phone !== undefined)
+        updates.whatsapp_invoice_to_store_phone =
+          whatsapp_invoice_to_store_phone;
+    }
     await branch.update(updates);
     res.json({
       success: true,

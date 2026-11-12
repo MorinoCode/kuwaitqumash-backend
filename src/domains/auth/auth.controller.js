@@ -5,8 +5,8 @@ import User from "./user.model.js";
 import Branch from "../store/branch.model.js";
 import logger from "../../utils/logger.js";
 
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
+const generateToken = (id, tenantSlug) => {
+  return jwt.sign({ id, tenant: tenantSlug }, process.env.JWT_SECRET, {
     expiresIn: "24h",
   });
 };
@@ -43,7 +43,7 @@ export const login = async (req, res) => {
       return res.status(403).json({ message: "Account is disabled." });
     }
 
-    const token = generateToken(user.id);
+    const token = generateToken(user.id, req.tenant.slug);
 
     const isProduction = process.env.NODE_ENV === "production";
 

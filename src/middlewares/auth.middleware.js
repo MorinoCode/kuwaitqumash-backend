@@ -23,6 +23,13 @@ export const protect = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
 
+    // A token is only valid for the store it was issued for: the schema is chosen
+    // from the x-tenant-id header, so without this check a token from any store
+    // would authenticate as the same numeric user id inside the requested store.
+    if (!decoded.tenant || decoded.tenant !== req.tenant.slug) {
+      return res.status(401).json({ message: 'Not authorized for this store.' });
+    }
+
    const user = await User.schema(req.tenant.db_schema).findByPk(decoded.id, {
       attributes: { exclude: ['password'] }
     });
