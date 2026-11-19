@@ -13,13 +13,12 @@ import {
   generateInvoicePDF,
   streamSalesExcel,
 } from "../../utils/invoiceGenerator.js";
-import {
-  sendInvoicePDF,
-  sendWhatsAppDocument,
-} from "../../utils/whatsapp.service.js";
+import { enqueueTransactionalDocument } from "../../queues/whatsapp.queue.js";
+import { isRedisEnabled } from "../../config/redis.js";
 import { Op } from "sequelize";
 import Branch from "../store/branch.model.js";
 import { invalidateDashboardCache } from "../../utils/dashboard-cache.js";
+import { startOfKuwaitDay, endOfKuwaitDay } from "../../utils/kuwaitTime.js";
 
 export const createSale = async (req, res) => {
 
@@ -46,7 +45,34 @@ export const createSale = async (req, res) => {
     });
     const { customer_id, items, payments, notes, branch_id } = req.body;
 
-    const invoiceBranchId = branch_id || req.user.branch_id || 1;
+    let invoiceBranchId;
+    if (req.user.role === "store_owner") {
+      invoiceBranchId = branch_id || req.user.branch_id;
+      if (!invoiceBranchId) {
+        const mainBranch = await Branch.schema(schema).findOne({
+          where: { is_main: true },
+          transaction: t,
+        });
+        invoiceBranchId = mainBranch?.id || null;
+      }
+      if (!invoiceBranchId) {
+        throw new Error("Branch ID is required for invoice creation.");
+      }
+    } else {
+      if (!req.user.branch_id) {
+        await t.rollback();
+        return res.status(403).json({
+          message: "User is not assigned to any branch.",
+        });
+      }
+      if (branch_id && Number(branch_id) !== Number(req.user.branch_id)) {
+        await t.rollback();
+        return res.status(403).json({
+          message: "Access denied. Non-owner staff cannot create sales for another branch.",
+        });
+      }
+      invoiceBranchId = req.user.branch_id;
+    }
 
     logger.info("Creating invoice", {
       component: "sales",
@@ -82,10 +108,15 @@ export const createSale = async (req, res) => {
 
       if (
         req.user.role !== "store_owner" &&
-        inventoryItem.branch_id !== req.user.branch_id &&
-        inventoryItem.branch_id !== invoiceBranchId
+        Number(inventoryItem.branch_id) !== Number(req.user.branch_id)
       ) {
         throw new Error(`Item belongs to another branch.`);
+      }
+      if (
+        req.user.role === "store_owner" &&
+        Number(inventoryItem.branch_id) !== Number(invoiceBranchId)
+      ) {
+        throw new Error(`Item belongs to a different branch than the selected invoice branch.`);
       }
       if (inventoryItem.status !== "In Stock" || inventoryItem.quantity <= 0) {
         throw new Error(`Item is out of stock.`);
@@ -109,10 +140,21 @@ export const createSale = async (req, res) => {
         );
       }
 
+      const catalogPrice = parseFloat(inventoryItem.price_per_meter || 0);
       const pricePerMeter = parseFloat(item.price_per_meter);
       if (isNaN(pricePerMeter) || pricePerMeter <= 0) {
         throw new Error(
           "Invalid price per meter for item " + (item.id || inventoryItem.id),
+        );
+      }
+
+      if (
+        req.user.role === "sales_man" &&
+        catalogPrice > 0 &&
+        pricePerMeter < catalogPrice - 0.001
+      ) {
+        throw new Error(
+          `Sales staff cannot sell "${inventoryItem.item_name}" below catalog price (${catalogPrice.toFixed(3)} KWD/m).`,
         );
       }
 
@@ -129,6 +171,21 @@ export const createSale = async (req, res) => {
         throw new Error(
           "Discount exceeds line total for item " +
             (item.id || inventoryItem.id),
+        );
+      }
+
+      const maxSalesmanDiscountPct = Number(
+        process.env.MAX_SALESMAN_DISCOUNT_PCT ?? 25,
+      );
+      if (
+        req.user.role === "sales_man" &&
+        grossLine > 0 &&
+        Number.isFinite(maxSalesmanDiscountPct) &&
+        maxSalesmanDiscountPct >= 0 &&
+        (lineDiscount / grossLine) * 100 > maxSalesmanDiscountPct + 0.01
+      ) {
+        throw new Error(
+          `Discount for "${inventoryItem.item_name}" exceeds the ${maxSalesmanDiscountPct}% limit for sales staff.`,
         );
       }
 
@@ -205,19 +262,6 @@ export const createSale = async (req, res) => {
 
     let invoiceNumber;
     if (invoiceBranchId) {
-
-      const [colCheck] = await sequelize.query(
-        `SELECT column_name FROM information_schema.columns WHERE table_schema = :schema AND table_name = 'branches' AND column_name = 'next_invoice_sequence'`,
-        { replacements: { schema }, transaction: t }
-      );
-
-      if (colCheck.length === 0) {
-        await sequelize.query(
-          `ALTER TABLE "${schema}".branches ADD COLUMN next_invoice_sequence INTEGER NOT NULL DEFAULT 1`,
-          { transaction: t }
-        );
-      }
-
       let isUnique = false;
       while (!isUnique) {
         const results = await sequelize.query(
@@ -328,6 +372,8 @@ export const createSale = async (req, res) => {
         { model: InvoiceItem.schema(schema), as: "items" },
         { model: InvoicePayment.schema(schema), as: "payments" },
         { model: Customer.schema(schema), as: "customer" },
+        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone"] },
+        { model: User.schema(schema), as: "creator", attributes: ["full_name"] },
       ],
     });
 
@@ -381,50 +427,53 @@ export const createSale = async (req, res) => {
         }
 
         if (pdfBuffer) {
+          const fileName = `invoice-${newInvoice.invoice_number}.pdf`;
+          const caption = `New Invoice: ${newInvoice.invoice_number} - ${customer.full_name || "Customer"}`;
           try {
-            const storeSendSuccess = await sendWhatsAppDocument(
-              req.tenant.slug,
-              normalizedStorePhone,
-              pdfBuffer,
-              `invoice-${newInvoice.invoice_number}.pdf`,
-              `New Invoice: ${newInvoice.invoice_number} - ${customer.full_name || "Customer"}`,
-              newInvoice.branch_id,
-            );
-            if (storeSendSuccess) {
-              logger.info("Invoice auto-sent to store owner", {
+            if (isRedisEnabled()) {
+              const jobId = await enqueueTransactionalDocument({
+                tenantSlug: req.tenant.slug,
+                phone: normalizedStorePhone,
+                pdfBuffer,
+                fileName,
+                caption,
+                branchId: newInvoice.branch_id,
+                invoiceNumber: newInvoice.invoice_number,
+              });
+              logger.info("Invoice auto-send queued for store owner", {
                 component: "sales",
+                jobId,
                 invoiceId: newInvoice.id,
                 invoiceNumber: newInvoice.invoice_number,
                 branchId: newInvoice.branch_id,
-                storePhone:
-                  normalizedStorePhone.substring(0, 4) +
-                  "****" +
-                  normalizedStorePhone.substring(
-                    normalizedStorePhone.length - 2,
-                  ),
               });
             } else {
-              logger.warn("Failed to auto-send invoice to store owner", {
-                component: "sales",
-                invoiceId: newInvoice.id,
-                branchId: newInvoice.branch_id,
-                storePhone:
-                  normalizedStorePhone.substring(0, 4) +
-                  "****" +
-                  normalizedStorePhone.substring(
-                    normalizedStorePhone.length - 2,
-                  ),
+              const { sendWhatsAppDocument } = await import(
+                "../../utils/whatsapp.service.js"
+              );
+              void sendWhatsAppDocument(
+                req.tenant.slug,
+                normalizedStorePhone,
+                pdfBuffer,
+                fileName,
+                caption,
+                newInvoice.branch_id,
+              ).catch((waError) => {
+                logger.error("Error auto-sending invoice to store owner", {
+                  component: "sales",
+                  error: waError?.message,
+                  invoiceId: newInvoice.id,
+                  branchId: newInvoice.branch_id,
+                });
               });
             }
           } catch (waError) {
-            logger.error("Error auto-sending invoice to store owner", {
+            logger.error("Failed to queue/send invoice to store owner", {
               component: "sales",
               error: waError?.message,
-              stack: waError?.stack,
               invoiceId: newInvoice.id,
               branchId: newInvoice.branch_id,
             });
-
           }
         } else {
           logger.warn("PDF buffer not available for auto-send to store owner", {
@@ -520,36 +569,23 @@ export const getInvoices = async (req, res) => {
     }
 
     if (start_date || end_date) {
-
       if (start_date && end_date) {
-
-        const [startYear, startMonth, startDay] = start_date
-          .split("-")
-          .map(Number);
-        const [endYear, endMonth, endDay] = end_date.split("-").map(Number);
-        const start = new Date(startYear, startMonth - 1, startDay, 0, 0, 0, 0);
-        const end = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999);
+        const start = startOfKuwaitDay(start_date);
+        const end = endOfKuwaitDay(end_date);
         whereClause.createdAt = { [Op.between]: [start, end] };
       } else {
-
         const dateRange = {};
         if (start_date) {
-          const [year, month, day] = start_date.split("-").map(Number);
-          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-          dateRange[Op.gte] = start;
+          dateRange[Op.gte] = startOfKuwaitDay(start_date);
         }
         if (end_date) {
-          const [year, month, day] = end_date.split("-").map(Number);
-          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
-          dateRange[Op.lte] = end;
+          dateRange[Op.lte] = endOfKuwaitDay(end_date);
         }
         whereClause.createdAt = dateRange;
       }
     } else if (date) {
-
-      const [year, month, day] = date.split("-").map(Number);
-      const startDate = new Date(year, month - 1, day, 0, 0, 0, 0);
-      const endDate = new Date(year, month - 1, day, 23, 59, 59, 999);
+      const startDate = startOfKuwaitDay(date);
+      const endDate = endOfKuwaitDay(date);
       whereClause.createdAt = { [Op.between]: [startDate, endDate] };
     }
 
@@ -726,6 +762,7 @@ export const getInvoiceById = async (req, res) => {
         { model: InvoiceItem.schema(schema), as: "items" },
         { model: InvoicePayment.schema(schema), as: "payments" },
         { model: Customer.schema(schema), as: "customer" },
+        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone"] },
         {
           model: User.schema(schema),
           as: "creator",
@@ -762,7 +799,7 @@ export const getInvoicePDF = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
     const { id } = req.params;
-    const { disposition = "attachment" } = req.query;
+    const safeDisposition = req.query.disposition === "inline" ? "inline" : "attachment";
 
     if (!id || isNaN(id)) {
       return res.status(400).json({ message: "Invalid invoice ID" });
@@ -773,6 +810,7 @@ export const getInvoicePDF = async (req, res) => {
         { model: InvoiceItem.schema(schema), as: "items" },
         { model: InvoicePayment.schema(schema), as: "payments" },
         { model: Customer.schema(schema), as: "customer" },
+        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone"] },
         {
           model: User.schema(schema),
           as: "creator",
@@ -857,7 +895,7 @@ export const getInvoicePDF = async (req, res) => {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `${disposition}; filename="invoice-${invoice.invoice_number}.pdf"`,
+      `${safeDisposition}; filename="invoice-${invoice.invoice_number}.pdf"`,
     );
     res.send(pdfResult.buffer);
   } catch (error) {
@@ -895,12 +933,26 @@ export const sendInvoiceWhatsApp = async (req, res) => {
       return res.status(403).json({ message: "Access denied to this invoice" });
     }
 
+    if (invoice.branch_id) {
+      const invoiceBranch = await Branch.schema(schema).findByPk(invoice.branch_id, {
+        attributes: ["id", "whatsapp_invoice_enabled"],
+      });
+      if (invoiceBranch && !invoiceBranch.whatsapp_invoice_enabled) {
+        return res.status(403).json({
+          message:
+            "Sending invoices to customers via WhatsApp is disabled for this branch.",
+        });
+      }
+    }
+
     const targetPhone = phone || invoice.customer?.phone;
     if (!targetPhone) {
       return res.status(400).json({ message: "Phone number is required" });
     }
 
+    let pdfBuffer = null;
     let pdfPath = invoice.pdf_path;
+
     if (!pdfPath || !fs.existsSync(pdfPath)) {
 
       const invoiceWithItems = await Invoice.schema(schema).findByPk(id, {
@@ -918,7 +970,7 @@ export const sendInvoiceWhatsApp = async (req, res) => {
 
       const inventoryItemIds = (invoiceWithItems.items || [])
         .map((item) => item.inventory_item_id)
-        .filter((id) => id != null);
+        .filter((itemId) => itemId != null);
 
       const inventoryItems =
         inventoryItemIds.length > 0
@@ -982,72 +1034,79 @@ export const sendInvoiceWhatsApp = async (req, res) => {
         invoice.pdf_path = pdfResult.localPath;
         await invoice.save();
         pdfPath = pdfResult.localPath;
-      } else {
+      }
 
-        if (pdfResult?.buffer) {
-          const success = await sendWhatsAppDocument(
-            req.tenant.slug,
-            targetPhone,
-            pdfResult.buffer,
-            `invoice-${invoice.invoice_number}.pdf`,
-            `Invoice ${invoice.invoice_number}`,
-            invoice.branch_id,
-          );
-          if (success) {
-            return res.json({
-              success: true,
-              message: "Invoice sent via WhatsApp successfully",
-            });
-          } else {
-            return res
-              .status(500)
-              .json({ message: "Failed to send invoice via WhatsApp" });
-          }
-        } else {
-          return res
-            .status(500)
-            .json({ message: "PDF generation failed. Please try again." });
-        }
+      if (pdfResult?.buffer) {
+        pdfBuffer = pdfResult.buffer;
       }
     }
 
-    if (!pdfPath || !fs.existsSync(pdfPath)) {
-      logger.error("PDF path invalid or file not found", {
+    if (!pdfBuffer && pdfPath && fs.existsSync(pdfPath)) {
+      pdfBuffer = await fs.promises.readFile(pdfPath);
+    }
+
+    if (!pdfBuffer) {
+      logger.error("PDF buffer unavailable for WhatsApp send", {
         component: "sales",
         invoiceId: id,
         pdfPath,
         branchId: invoice.branch_id,
       });
       return res.status(500).json({
-        message: "PDF file not found. Please regenerate the invoice PDF.",
+        message: "PDF generation failed. Please try again.",
       });
     }
 
-    const success = await sendInvoicePDF(
+    const fileName = `invoice-${invoice.invoice_number}.pdf`;
+    const caption = `Invoice ${invoice.invoice_number}`;
+
+    if (isRedisEnabled()) {
+      const jobId = await enqueueTransactionalDocument({
+        tenantSlug: req.tenant.slug,
+        phone: targetPhone,
+        pdfBuffer,
+        fileName,
+        caption,
+        branchId: invoice.branch_id,
+        invoiceNumber: invoice.invoice_number,
+      });
+      return res.status(202).json({
+        success: true,
+        queued: true,
+        jobId,
+        message: "Invoice queued for WhatsApp delivery",
+      });
+    }
+
+    const { sendWhatsAppDocument } = await import(
+      "../../utils/whatsapp.service.js"
+    );
+    const success = await sendWhatsAppDocument(
       req.tenant.slug,
       targetPhone,
-      pdfPath,
-      `Invoice ${invoice.invoice_number}`,
+      pdfBuffer,
+      fileName,
+      caption,
       invoice.branch_id,
     );
 
     if (success) {
-      res.json({
+      return res.json({
         success: true,
         message: "Invoice sent via WhatsApp successfully",
       });
-    } else {
-      logger.warn("sendInvoicePDF returned false", {
-        component: "sales",
-        invoiceId: id,
-        branchId: invoice.branch_id,
-        tenantSlug: req.tenant.slug,
-      });
-      res.status(500).json({
-        message:
-          "Failed to send invoice via WhatsApp. Please check WhatsApp connection.",
-      });
     }
+
+    logger.warn("sendWhatsAppDocument returned false", {
+      component: "sales",
+      invoiceId: id,
+      branchId: invoice.branch_id,
+      tenantSlug: req.tenant.slug,
+    });
+    return res.status(500).json({
+      message:
+        "Failed to send invoice via WhatsApp. Please check WhatsApp connection.",
+    });
   } catch (error) {
     logger.error("Send WhatsApp error", {
       component: "sales",
@@ -1064,14 +1123,15 @@ export const sendInvoiceWhatsApp = async (req, res) => {
 export const downloadSalesExcel = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
-    const { branch_ids, start_date, end_date } = req.query;
+    const { branch_ids, branch_id, start_date, end_date } = req.query;
     const whereClause = {};
 
     if (req.user.role === "store_owner") {
-      if (branch_ids && branch_ids !== "null" && branch_ids !== "undefined") {
-        const branchIdArray = branch_ids
+      const rawBranchFilter = branch_ids || branch_id;
+      if (rawBranchFilter && rawBranchFilter !== "null" && rawBranchFilter !== "undefined") {
+        const branchIdArray = String(rawBranchFilter)
           .split(",")
-          .map((id) => parseInt(id.trim()))
+          .map((id) => parseInt(id.trim(), 10))
           .filter((id) => !isNaN(id));
         if (branchIdArray.length > 0) {
           whereClause.branch_id = { [Op.in]: branchIdArray };
@@ -1084,14 +1144,10 @@ export const downloadSalesExcel = async (req, res) => {
     if (start_date || end_date) {
       const dateRange = {};
       if (start_date) {
-        const start = new Date(start_date);
-        start.setHours(0, 0, 0, 0);
-        dateRange[Op.gte] = start;
+        dateRange[Op.gte] = startOfKuwaitDay(start_date);
       }
       if (end_date) {
-        const end = new Date(end_date);
-        end.setHours(23, 59, 59, 999);
-        dateRange[Op.lte] = end;
+        dateRange[Op.lte] = endOfKuwaitDay(end_date);
       }
       whereClause.createdAt = dateRange;
     }

@@ -32,5 +32,14 @@ export default [
       "no-console": "off",
       "no-undef": "error"
     }
+  },
+  {
+    files: ["loadtest/**/*.js"],
+    languageOptions: {
+      globals: {
+        __ENV: "readonly",
+        __ITER: "readonly",
+      },
+    },
   }
 ];

@@ -39,7 +39,7 @@ router.post(
 );
 router.put(
   "/branches/:id",
-  restrictTo("store_owner", "branch_manager", "sales_man"),
+  restrictTo("store_owner", "branch_manager"),
   validate(updateBranchBody),
   manageController.updateBranch,
 );

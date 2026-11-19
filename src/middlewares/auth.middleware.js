@@ -1,6 +1,11 @@
+import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import User from '../domains/auth/user.model.js';
+import { cacheGet } from '../config/redis.js';
 import logger from '../utils/logger.js';
+
+const getJwtRevocationKey = (decoded, rawToken) =>
+  `revoked:jwt:${decoded?.jti || crypto.createHash('sha256').update(String(rawToken)).digest('hex')}`;
 
 export const protect = async (req, res, next) => {
   try {
@@ -30,7 +35,12 @@ export const protect = async (req, res, next) => {
       return res.status(401).json({ message: 'Not authorized for this store.' });
     }
 
-   const user = await User.schema(req.tenant.db_schema).findByPk(decoded.id, {
+    const revoked = await cacheGet(getJwtRevocationKey(decoded, token));
+    if (revoked) {
+      return res.status(401).json({ message: 'Session has been revoked.' });
+    }
+
+    const user = await User.schema(req.tenant.db_schema).findByPk(decoded.id, {
       attributes: { exclude: ['password'] }
     });
 
@@ -40,6 +50,12 @@ export const protect = async (req, res, next) => {
 
     if (!user.is_active) {
       return res.status(403).json({ message: 'User account is inactive.' });
+    }
+
+    const tokenVersion = decoded.tv ?? 0;
+    const currentVersion = user.token_version ?? 0;
+    if (tokenVersion !== currentVersion) {
+      return res.status(401).json({ message: 'Session expired or revoked. Please log in again.' });
     }
 
     req.user = user;

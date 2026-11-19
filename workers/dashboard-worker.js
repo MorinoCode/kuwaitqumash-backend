@@ -1,8 +1,9 @@
 import "../src/config/env.js";
 import sequelize from "../src/config/database.js";
-import { cacheSet, isRedisAvailable } from "../src/config/redis.js";
+import { cacheSet, isRedisAvailable, ensureRedisConnected } from "../src/config/redis.js";
 import logger from "../src/utils/logger.js";
 import cron from "node-cron";
+import "../src/domains/associations.js";
 import Tenant from "../src/domains/platform/tenant.model.js";
 import Invoice from "../src/domains/sales/invoice.model.js";
 import InvoiceItem from "../src/domains/sales/invoice-item.model.js";
@@ -24,8 +25,9 @@ const calculateProfit = (items) => {
   let totalCost = 0;
   items.forEach((item) => {
     const meters = parseFloat(item.meters || 0);
+    const qty = parseInt(item.quantity, 10) || 1;
     const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
-    totalCost += meters * buyPrice;
+    totalCost += meters * qty * buyPrice;
   });
   return totalCost;
 };
@@ -59,8 +61,9 @@ const aggregateOwnerDashboard = async (tenant) => {
       totalMetersToday += parseFloat(inv.total_meters || 0);
       inv.items.forEach((item) => {
         const meters = parseFloat(item.meters || 0);
+        const qty = parseInt(item.quantity, 10) || 1;
         const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
-        totalCostToday += meters * buyPrice;
+        totalCostToday += meters * qty * buyPrice;
       });
     });
 
@@ -82,9 +85,7 @@ const aggregateOwnerDashboard = async (tenant) => {
       totalInventoryValue += value;
     });
 
-    const activeBranches = await Branch.schema(schema).count({
-      where: { is_active: true },
-    });
+    const activeBranches = await Branch.schema(schema).count();
 
     const whatsappConfig = await WhatsappConfig.findOne({
       where: { tenant_slug: tenant.slug },
@@ -176,7 +177,7 @@ const aggregateOwnerDashboard = async (tenant) => {
             },
           ],
           where: { fabric_type: item.fabric_type },
-          attributes: ["meters", "cost_per_meter_snapshot"],
+          attributes: ["meters", "quantity", "cost_per_meter_snapshot"],
         });
 
         const cost = calculateProfit(items);
@@ -246,7 +247,7 @@ const aggregateOwnerDashboard = async (tenant) => {
             },
           ],
           where: { inventory_item_id: item.id },
-          attributes: ["meters", "cost_per_meter_snapshot"],
+          attributes: ["meters", "quantity", "cost_per_meter_snapshot"],
         });
 
         const cost = calculateProfit(items);
@@ -348,12 +349,14 @@ const aggregateOwnerDashboard = async (tenant) => {
     };
 
     const cacheKey = `dashboard:owner:${tenant.slug}`;
+    const cacheKeyToday = `dashboard:owner:${tenant.slug}:today:today`;
     await cacheSet(cacheKey, dashboardData, CACHE_TTL.TODAY);
+    await cacheSet(cacheKeyToday, dashboardData, CACHE_TTL.TODAY);
 
     logger.info("Owner dashboard aggregated", {
       component: "worker",
       tenant: tenant.slug,
-      cacheKey,
+      cacheKey: cacheKeyToday,
     });
 
     return dashboardData;
@@ -398,8 +401,9 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
       totalMetersToday += parseFloat(inv.total_meters || 0);
       inv.items.forEach((item) => {
         const meters = parseFloat(item.meters || 0);
+        const qty = parseInt(item.quantity, 10) || 1;
         const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
-        totalCostToday += meters * buyPrice;
+        totalCostToday += meters * qty * buyPrice;
       });
     });
 
@@ -680,13 +684,15 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
     };
 
     const cacheKey = `dashboard:manager:${tenant.slug}:${branchId}`;
+    const cacheKeyToday = `dashboard:manager:${tenant.slug}:${branchId}:today:today`;
     await cacheSet(cacheKey, dashboardData, CACHE_TTL.TODAY);
+    await cacheSet(cacheKeyToday, dashboardData, CACHE_TTL.TODAY);
 
     logger.info("Manager dashboard aggregated", {
       component: "worker",
       tenant: tenant.slug,
       branchId,
-      cacheKey,
+      cacheKey: cacheKeyToday,
     });
 
     return dashboardData;
@@ -879,9 +885,7 @@ const processAllTenants = async () => {
 
         await aggregateOwnerDashboard(tenant);
 
-        const branches = await Branch.schema(tenant.db_schema).findAll({
-          where: { is_active: true },
-        });
+        const branches = await Branch.schema(tenant.db_schema).findAll();
 
         for (const branch of branches) {
           await aggregateManagerDashboard(tenant, branch.id);
@@ -921,6 +925,7 @@ const main = async () => {
     await sequelize.authenticate();
     logger.info("Database connected", { component: "worker" });
 
+    await ensureRedisConnected(2000);
     if (isRedisAvailable()) {
       logger.info("Redis available, caching enabled", { component: "worker" });
     } else {

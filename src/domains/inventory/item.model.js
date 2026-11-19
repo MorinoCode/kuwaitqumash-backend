@@ -50,7 +50,7 @@ const InventoryItem = sequelize.define('InventoryItem', {
     allowNull: false,
     defaultValue: 'meter',
     validate: {
-      isIn: [['meter', 'roll', 'piece']]
+      isIn: [['meter', 'roll']]
     }
   },
   length_m: {
@@ -81,10 +81,6 @@ const InventoryItem = sequelize.define('InventoryItem', {
     allowNull: false,
     defaultValue: 0
   },
-  supplier_name: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
   status: {
     type: DataTypes.STRING,
     defaultValue: 'In Stock',
@@ -98,11 +94,6 @@ const InventoryItem = sequelize.define('InventoryItem', {
   },
   alert_dismissed_at: {
     type: DataTypes.DATE,
-    allowNull: true
-  },
-  images: {
-    type: DataTypes.ARRAY(DataTypes.STRING),
-    defaultValue: [],
     allowNull: true
   },
   description: {

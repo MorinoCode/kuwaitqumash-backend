@@ -10,6 +10,11 @@ import WhatsappConfig from "../platform/whatsapp.config.model.js";
 import logger from "../../utils/logger.js";
 import { LOW_STOCK_SQL, totalStockMeters } from "../../utils/lowStock.js";
 import { cacheGet, cacheSet } from "../../config/redis.js";
+import {
+  startOfKuwaitDay,
+  endOfKuwaitDay,
+  daysAgoKuwaitStart,
+} from "../../utils/kuwaitTime.js";
 
 const DASHBOARD_CACHE_TTL_SECONDS = Number(process.env.DASHBOARD_CACHE_TTL_SECONDS) || 300;
 
@@ -22,11 +27,8 @@ export const getOwnerDashboard = async (req, res) => {
     let dateFilterEnd = null;
 
     if (startDate && endDate) {
-      dateFilterStart = new Date(startDate);
-      dateFilterEnd = new Date(endDate);
-
-      dateFilterStart.setHours(0, 0, 0, 0);
-      dateFilterEnd.setHours(23, 59, 59, 999);
+      dateFilterStart = startOfKuwaitDay(startDate);
+      dateFilterEnd = endOfKuwaitDay(endDate);
     }
 
     const cacheKey = `dashboard:owner:${req.tenant.slug}:${startDate || "today"}:${endDate || "today"}`;
@@ -54,23 +56,10 @@ export const getOwnerDashboard = async (req, res) => {
       requestId: req.requestId,
     });
 
-    const todayStart =
-      dateFilterStart || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    if (!dateFilterStart) {
-      todayStart.setHours(0, 0, 0, 0);
-    }
-    const todayEnd = dateFilterEnd || new Date();
-    if (!dateFilterEnd) {
-      todayEnd.setHours(23, 59, 59, 999);
-    }
-
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
-    weekStart.setHours(0, 0, 0, 0);
-
-    const monthStart = new Date();
-    monthStart.setDate(monthStart.getDate() - 30);
-    monthStart.setHours(0, 0, 0, 0);
+    const todayStart = dateFilterStart || daysAgoKuwaitStart(7);
+    const todayEnd = dateFilterEnd || endOfKuwaitDay(new Date());
+    const weekStart = daysAgoKuwaitStart(7);
+    const monthStart = daysAgoKuwaitStart(30);
 
     // Aggregations run inside PostgreSQL: loading every invoice row (and its
     // items) into Node was the main cost and memory spike of this endpoint.
@@ -83,7 +72,7 @@ export const getOwnerDashboard = async (req, res) => {
       FROM "${schema}".invoices inv
       WHERE inv.created_at >= :dateStart
         AND inv.created_at <= :dateEnd
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
       `,
       {
         replacements: { dateStart: todayStart, dateEnd: todayEnd },
@@ -91,8 +80,52 @@ export const getOwnerDashboard = async (req, res) => {
       },
     );
 
-    const totalSalesToday = parseFloat(periodTotals.total_sales || 0);
-    const totalMetersToday = parseFloat(periodTotals.total_meters || 0);
+    const [periodRefunds = {}] = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(r.total_amount), 0) AS refunded_amount,
+        COALESCE((
+          SELECT SUM(COALESCE(ri.meters, 0) * COALESCE(ri.quantity_refunded, 1))
+          FROM "${schema}".refund_items ri
+          INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+          INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+          WHERE inv2.created_at >= :dateStart
+            AND inv2.created_at <= :dateEnd
+            AND inv2.status = 'Partially Refunded'
+            AND r2.status = 'Completed'
+        ), 0) AS refunded_meters,
+        COALESCE((
+          SELECT SUM(COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(ri.meters, 0) * COALESCE(ri.quantity_refunded, 1))
+          FROM "${schema}".refund_items ri
+          INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+          INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+          LEFT JOIN "${schema}".invoice_items it ON ri.invoice_item_id = it.id
+          WHERE inv2.created_at >= :dateStart
+            AND inv2.created_at <= :dateEnd
+            AND inv2.status = 'Partially Refunded'
+            AND r2.status = 'Completed'
+        ), 0) AS refunded_cost
+      FROM "${schema}".refunds r
+      INNER JOIN "${schema}".invoices inv ON r.invoice_id = inv.id
+      WHERE inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
+        AND inv.status = 'Partially Refunded'
+        AND r.status = 'Completed'
+      `,
+      {
+        replacements: { dateStart: todayStart, dateEnd: todayEnd },
+        type: sequelize.QueryTypes.SELECT,
+      },
+    );
+
+    const totalSalesToday = Math.max(
+      0,
+      parseFloat(periodTotals.total_sales || 0) - parseFloat(periodRefunds.refunded_amount || 0),
+    );
+    const totalMetersToday = Math.max(
+      0,
+      parseFloat(periodTotals.total_meters || 0) - parseFloat(periodRefunds.refunded_meters || 0),
+    );
     const invoiceCountToday = parseInt(periodTotals.invoice_count || 0, 10);
 
     const [periodCost = {}] = await sequelize.query(
@@ -105,14 +138,17 @@ export const getOwnerDashboard = async (req, res) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       WHERE inv.created_at >= :dateStart
         AND inv.created_at <= :dateEnd
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
       `,
       {
         replacements: { dateStart: todayStart, dateEnd: todayEnd },
         type: sequelize.QueryTypes.SELECT,
       },
     );
-    const totalCostToday = parseFloat(periodCost.total_cost || 0);
+    const totalCostToday = Math.max(
+      0,
+      parseFloat(periodCost.total_cost || 0) - parseFloat(periodRefunds.refunded_cost || 0),
+    );
 
     const topFabricRows = await sequelize.query(
       `
@@ -127,7 +163,7 @@ export const getOwnerDashboard = async (req, res) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       WHERE inv.created_at >= :dateStart
         AND inv.created_at <= :dateEnd
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
       GROUP BY it.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
@@ -159,7 +195,7 @@ export const getOwnerDashboard = async (req, res) => {
         COUNT(*)::int AS month_invoices
       FROM "${schema}".invoices inv
       WHERE inv.created_at >= :monthStart
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
       `,
       {
         replacements: { monthStart },
@@ -197,7 +233,7 @@ export const getOwnerDashboard = async (req, res) => {
     const salesTrend7Days = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: weekStart },
-        status: "Paid",
+        status: { [Op.in]: ["Paid", "Partially Refunded"] },
       },
       attributes: [
         [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
@@ -211,7 +247,7 @@ export const getOwnerDashboard = async (req, res) => {
     const salesTrend30Days = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.gte]: monthStart },
-        status: "Paid",
+        status: { [Op.in]: ["Paid", "Partially Refunded"] },
       },
       attributes: [
         [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
@@ -225,7 +261,7 @@ export const getOwnerDashboard = async (req, res) => {
     const branchSales = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.between]: [todayStart, todayEnd] },
-        status: "Paid",
+        status: { [Op.in]: ["Paid", "Partially Refunded"] },
       },
       attributes: [
         "branch_id",
@@ -253,7 +289,7 @@ export const getOwnerDashboard = async (req, res) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       WHERE inv.created_at >= :dateStart
         AND inv.created_at <= :dateEnd
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
       GROUP BY it.fabric_type, it.color
       ORDER BY revenue DESC
     `,
@@ -282,7 +318,7 @@ export const getOwnerDashboard = async (req, res) => {
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at >= :dateStart
         AND inv.created_at <= :dateEnd
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
         AND it.fabric_type IS NOT NULL
       GROUP BY it.fabric_type
       ORDER BY it.fabric_type ASC
@@ -310,7 +346,7 @@ export const getOwnerDashboard = async (req, res) => {
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at >= :dateStart
         AND inv.created_at <= :dateEnd
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
       GROUP BY ii.id, ii.item_name, it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
@@ -333,7 +369,7 @@ export const getOwnerDashboard = async (req, res) => {
     const topCustomers = await Invoice.schema(schema).findAll({
       where: {
         createdAt: { [Op.between]: [todayStart, todayEnd] },
-        status: "Paid",
+        status: { [Op.in]: ["Paid", "Partially Refunded"] },
       },
       attributes: [
         "customer_id",
@@ -460,11 +496,8 @@ export const getManagerDashboard = async (req, res) => {
     let dateFilterEnd = null;
 
     if (startDate && endDate) {
-      dateFilterStart = new Date(startDate);
-      dateFilterEnd = new Date(endDate);
-
-      dateFilterStart.setHours(0, 0, 0, 0);
-      dateFilterEnd.setHours(23, 59, 59, 999);
+      dateFilterStart = startOfKuwaitDay(startDate);
+      dateFilterEnd = endOfKuwaitDay(endDate);
     }
 
     const cacheKey = `dashboard:manager:${req.tenant.slug}:${branchId}:${startDate || "today"}:${endDate || "today"}`;
@@ -494,23 +527,10 @@ export const getManagerDashboard = async (req, res) => {
       requestId: req.requestId,
     });
 
-    const todayStart =
-      dateFilterStart || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    if (!dateFilterStart) {
-      todayStart.setHours(0, 0, 0, 0);
-    }
-    const todayEnd = dateFilterEnd || new Date();
-    if (!dateFilterEnd) {
-      todayEnd.setHours(23, 59, 59, 999);
-    }
-
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
-    weekStart.setHours(0, 0, 0, 0);
-
-    const monthStart = new Date();
-    monthStart.setDate(monthStart.getDate() - 30);
-    monthStart.setHours(0, 0, 0, 0);
+    const todayStart = dateFilterStart || daysAgoKuwaitStart(7);
+    const todayEnd = dateFilterEnd || endOfKuwaitDay(new Date());
+    const weekStart = daysAgoKuwaitStart(7);
+    const monthStart = daysAgoKuwaitStart(30);
 
     const [
       branchTotalsRows,
@@ -536,7 +556,7 @@ export const getManagerDashboard = async (req, res) => {
         WHERE inv.branch_id = :branchId
           AND inv.created_at >= :dateStart
           AND inv.created_at <= :dateEnd
-          AND inv.status = 'Paid'
+          AND inv.status IN ('Paid', 'Partially Refunded')
         `,
         {
           replacements: { branchId, dateStart: todayStart, dateEnd: todayEnd },
@@ -566,7 +586,7 @@ export const getManagerDashboard = async (req, res) => {
         where: {
           branch_id: branchId,
           createdAt: { [Op.gte]: weekStart },
-          status: "Paid",
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
         },
         attributes: [
           [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
@@ -581,7 +601,7 @@ export const getManagerDashboard = async (req, res) => {
         where: {
           branch_id: branchId,
           createdAt: { [Op.gte]: monthStart },
-          status: "Paid",
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
         },
         attributes: [
           [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
@@ -601,7 +621,7 @@ export const getManagerDashboard = async (req, res) => {
           COUNT(it.id) AS quantity
         FROM "${schema}".invoice_items it
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-        WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
+        WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status IN ('Paid', 'Partially Refunded')
         GROUP BY it.fabric_type, it.color
         ORDER BY revenue DESC
       `,
@@ -622,7 +642,7 @@ export const getManagerDashboard = async (req, res) => {
         INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
         WHERE inv.branch_id = :branchId
           AND inv.created_at >= :todayStart
-          AND inv.status = 'Paid'
+          AND inv.status IN ('Paid', 'Partially Refunded')
           AND it.fabric_type IS NOT NULL
         GROUP BY it.fabric_type
         ORDER BY it.fabric_type ASC
@@ -637,7 +657,7 @@ export const getManagerDashboard = async (req, res) => {
         where: {
           branch_id: branchId,
           createdAt: { [Op.gte]: todayStart },
-          status: "Paid",
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
         },
         attributes: [
           [Sequelize.col("Invoice.created_by"), "created_by"],
@@ -670,7 +690,7 @@ export const getManagerDashboard = async (req, res) => {
         where: {
           branch_id: branchId,
           createdAt: { [Op.gte]: weekStart },
-          status: "Paid",
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
         },
         attributes: [
           [Sequelize.col("Invoice.created_by"), "created_by"],
@@ -703,7 +723,7 @@ export const getManagerDashboard = async (req, res) => {
         where: {
           branch_id: branchId,
           createdAt: { [Op.gte]: monthStart },
-          status: "Paid",
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
         },
         attributes: [
           [Sequelize.col("Invoice.created_by"), "created_by"],
@@ -744,7 +764,7 @@ export const getManagerDashboard = async (req, res) => {
         FROM "${schema}".invoice_items it
         INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
         INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-        WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
+        WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status IN ('Paid', 'Partially Refunded')
         GROUP BY ii.id, ii.item_name, it.fabric_type, it.color, ii.fabric_type
         ORDER BY revenue DESC
         LIMIT 5
@@ -759,7 +779,7 @@ export const getManagerDashboard = async (req, res) => {
         where: {
           branch_id: branchId,
           createdAt: { [Op.gte]: todayStart },
-          status: "Paid",
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
         },
         attributes: [
           "customer_id",
@@ -781,8 +801,56 @@ export const getManagerDashboard = async (req, res) => {
     ]);
 
     const [branchTotals = {}] = branchTotalsRows;
-    const branchSalesToday = parseFloat(branchTotals.total_sales || 0);
-    const totalMetersToday = parseFloat(branchTotals.total_meters || 0);
+
+    const [branchRefunds = {}] = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(r.total_amount), 0) AS refunded_amount,
+        COALESCE((
+          SELECT SUM(COALESCE(ri.meters, 0) * COALESCE(ri.quantity_refunded, 1))
+          FROM "${schema}".refund_items ri
+          INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+          INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+          WHERE inv2.branch_id = :branchId
+            AND inv2.created_at >= :dateStart
+            AND inv2.created_at <= :dateEnd
+            AND inv2.status = 'Partially Refunded'
+            AND r2.status = 'Completed'
+        ), 0) AS refunded_meters,
+        COALESCE((
+          SELECT SUM(COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(ri.meters, 0) * COALESCE(ri.quantity_refunded, 1))
+          FROM "${schema}".refund_items ri
+          INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+          INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+          LEFT JOIN "${schema}".invoice_items it ON ri.invoice_item_id = it.id
+          WHERE inv2.branch_id = :branchId
+            AND inv2.created_at >= :dateStart
+            AND inv2.created_at <= :dateEnd
+            AND inv2.status = 'Partially Refunded'
+            AND r2.status = 'Completed'
+        ), 0) AS refunded_cost
+      FROM "${schema}".refunds r
+      INNER JOIN "${schema}".invoices inv ON r.invoice_id = inv.id
+      WHERE inv.branch_id = :branchId
+        AND inv.created_at >= :dateStart
+        AND inv.created_at <= :dateEnd
+        AND inv.status = 'Partially Refunded'
+        AND r.status = 'Completed'
+      `,
+      {
+        replacements: { branchId, dateStart: todayStart, dateEnd: todayEnd },
+        type: sequelize.QueryTypes.SELECT,
+      },
+    );
+
+    const branchSalesToday = Math.max(
+      0,
+      parseFloat(branchTotals.total_sales || 0) - parseFloat(branchRefunds.refunded_amount || 0),
+    );
+    const totalMetersToday = Math.max(
+      0,
+      parseFloat(branchTotals.total_meters || 0) - parseFloat(branchRefunds.refunded_meters || 0),
+    );
     const branchInvoiceCount = parseInt(branchTotals.invoice_count || 0, 10);
 
     const [branchCost = {}] = await sequelize.query(
@@ -796,14 +864,17 @@ export const getManagerDashboard = async (req, res) => {
       WHERE inv.branch_id = :branchId
         AND inv.created_at >= :dateStart
         AND inv.created_at <= :dateEnd
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
       `,
       {
         replacements: { branchId, dateStart: todayStart, dateEnd: todayEnd },
         type: sequelize.QueryTypes.SELECT,
       },
     );
-    const totalCostToday = parseFloat(branchCost.total_cost || 0);
+    const totalCostToday = Math.max(
+      0,
+      parseFloat(branchCost.total_cost || 0) - parseFloat(branchRefunds.refunded_cost || 0),
+    );
 
     const netProfitToday = branchSalesToday - totalCostToday;
     const avgSaleValue =
@@ -907,7 +978,8 @@ export const getSalesmanDashboard = async (req, res) => {
   try {
     const userId = req.user.id;
     const schema = req.tenant.db_schema;
-    const cacheKey = `dashboard:salesman:${req.tenant.slug}:${userId}`;
+    const { startDate, endDate } = req.query;
+    const cacheKey = `dashboard:salesman:${req.tenant.slug}:${userId}:${startDate || "today"}:${endDate || "today"}`;
 
     const cachedData = await cacheGet(cacheKey);
     if (cachedData) {
@@ -932,11 +1004,9 @@ export const getSalesmanDashboard = async (req, res) => {
       requestId: req.requestId,
     });
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
+    const todayStart = startDate ? startOfKuwaitDay(startDate) : startOfKuwaitDay(new Date());
+    const todayEnd = endDate ? endOfKuwaitDay(endDate) : endOfKuwaitDay(new Date());
+    const weekStart = daysAgoKuwaitStart(7);
 
     const [myTotals = {}] = await sequelize.query(
       `
@@ -946,10 +1016,11 @@ export const getSalesmanDashboard = async (req, res) => {
       FROM "${schema}".invoices inv
       WHERE inv.created_by = :userId
         AND inv.created_at >= :todayStart
-        AND inv.status = 'Paid'
+        AND inv.created_at <= :todayEnd
+        AND inv.status IN ('Paid', 'Partially Refunded')
       `,
       {
-        replacements: { userId, todayStart },
+        replacements: { userId, todayStart, todayEnd },
         type: sequelize.QueryTypes.SELECT,
       },
     );
@@ -961,10 +1032,11 @@ export const getSalesmanDashboard = async (req, res) => {
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       WHERE inv.created_by = :userId
         AND inv.created_at >= :todayStart
-        AND inv.status = 'Paid'
+        AND inv.created_at <= :todayEnd
+        AND inv.status IN ('Paid', 'Partially Refunded')
       `,
       {
-        replacements: { userId, todayStart },
+        replacements: { userId, todayStart, todayEnd },
         type: sequelize.QueryTypes.SELECT,
       },
     );
@@ -979,7 +1051,7 @@ export const getSalesmanDashboard = async (req, res) => {
       where: {
         created_by: userId,
         createdAt: { [Op.gte]: weekStart },
-        status: "Paid",
+        status: { [Op.in]: ["Paid", "Partially Refunded"] },
       },
       attributes: [
         [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
@@ -999,7 +1071,7 @@ export const getSalesmanDashboard = async (req, res) => {
         COUNT(it.id) AS quantity
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
+      WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status IN ('Paid', 'Partially Refunded')
       GROUP BY it.fabric_type, it.color
       ORDER BY revenue DESC
     `,
@@ -1020,7 +1092,7 @@ export const getSalesmanDashboard = async (req, res) => {
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_by = :userId
         AND inv.created_at >= :todayStart
-        AND inv.status = 'Paid'
+        AND inv.status IN ('Paid', 'Partially Refunded')
         AND it.fabric_type IS NOT NULL
       GROUP BY it.fabric_type
       ORDER BY it.fabric_type ASC
@@ -1043,7 +1115,7 @@ export const getSalesmanDashboard = async (req, res) => {
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
+      WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status IN ('Paid', 'Partially Refunded')
       GROUP BY ii.id, ii.item_name, it.fabric_type, it.color, ii.fabric_type
       ORDER BY revenue DESC
       LIMIT 5
@@ -1159,7 +1231,6 @@ export const getDashboardAnalytics = async (req, res) => {
 
     const fetchPeriodData = async (start, end) => {
       try {
-
         const startDateObj = start instanceof Date ? start : new Date(start);
         const endDateObj = end instanceof Date ? end : new Date(end);
 
@@ -1167,426 +1238,242 @@ export const getDashboardAnalytics = async (req, res) => {
           throw new Error("Invalid date range provided");
         }
 
-        const dateFilter = {
-          createdAt: { [Op.between]: [startDateObj, endDateObj] },
-          status: "Paid",
+        const baseReplacements = {
+          start: startDateObj,
+          end: endDateObj,
         };
-        const combinedFilter = { ...dateFilter, ...branchFilter };
-
-        logger.info("Fetching period data", {
-          component: "dashboard",
-          startDate: start,
-          endDate: end,
-          daysDiff: Math.ceil(
-            (new Date(end) - new Date(start)) / (1000 * 60 * 60 * 24),
-          ),
-          tenant: req.tenant.slug,
-        });
-
-        const totalRevenue =
-          (await Invoice.schema(schema).sum("total_amount", {
-            where: combinedFilter,
-          })) || 0;
-        const totalMetersSold =
-          (await Invoice.schema(schema).sum("total_meters", {
-            where: combinedFilter,
-          })) || 0;
-        const totalTransactions =
-          (await Invoice.schema(schema).count({ where: combinedFilter })) || 0;
-
-        const soldItems = await InvoiceItem.schema(schema).findAll({
-          include: [
-            {
-              model: Invoice.schema(schema),
-              where: combinedFilter,
-              attributes: [],
-            },
-            {
-              model: InventoryItem.schema(schema),
-              as: "inventory_item",
-              attributes: ["cost_per_meter"],
-            },
-          ],
-          attributes: ["total_price", "meters", "quantity"],
-        });
-
-        let totalCost = 0;
-        soldItems.forEach((item) => {
-          totalCost +=
-            parseFloat(item.inventory_item?.cost_per_meter || 0) *
-            parseFloat(item.meters || 0) *
-            (parseInt(item.quantity, 10) || 1);
-        });
-
-        const grossProfit = totalRevenue - totalCost;
-        const totalQuantity = soldItems.length;
+        let branchSql = "";
+        if (branchFilter.branch_id) {
+          if (branchFilter.branch_id[Op.in]) {
+            branchSql = " AND inv.branch_id IN (:branchIds)";
+            baseReplacements.branchIds = branchFilter.branch_id[Op.in];
+          } else if (typeof branchFilter.branch_id === "number") {
+            branchSql = " AND inv.branch_id = :branchId";
+            baseReplacements.branchId = branchFilter.branch_id;
+          }
+        }
 
         const daysDiff = Math.ceil(
           (endDateObj - startDateObj) / (1000 * 60 * 60 * 24),
         );
+        const truncUnit = daysDiff <= 30 ? "day" : daysDiff <= 90 ? "week" : "month";
 
-        let groupBy;
-        let salesTrendRaw;
-
-        if (daysDiff <= 30) {
-
-          groupBy = Sequelize.fn("DATE", Sequelize.col("created_at"));
-          salesTrendRaw = await Invoice.schema(schema).findAll({
-            attributes: [
-              [groupBy, "date"],
-              [Sequelize.fn("SUM", Sequelize.col("total_amount")), "revenue"],
-              [Sequelize.fn("SUM", Sequelize.col("total_meters")), "meters"],
-              [Sequelize.fn("COUNT", Sequelize.col("id")), "quantity"],
-            ],
-            where: combinedFilter,
-            group: [groupBy],
-            order: [[groupBy, "ASC"]],
-            raw: true,
-          });
-        } else {
-
-          const truncType = daysDiff <= 90 ? "week" : "month";
-          let query = `
+        const [
+          [kpiRow = {}],
+          [refundTotals = {}],
+          salesTrendRows,
+          categoryRows,
+          fabricRows,
+          branchRows,
+        ] = await Promise.all([
+          sequelize.query(
+            `
             SELECT
-              DATE_TRUNC('${truncType}', created_at) AS date,
-              SUM(total_amount) AS revenue,
-              SUM(total_meters) AS meters,
-              COUNT(id) AS quantity
-            FROM "${schema}".invoices
-            WHERE created_at BETWEEN :start AND :end
-            AND status = 'Paid'
-          `;
-
-          const replacements = {
-            start: startDateObj,
-            end: endDateObj,
-          };
-
-          if (branchFilter.branch_id) {
-            if (branchFilter.branch_id[Op.in]) {
-              query += ` AND branch_id IN (:branchIds)`;
-              replacements.branchIds = branchFilter.branch_id[Op.in];
-            } else if (typeof branchFilter.branch_id === "number") {
-              query += ` AND branch_id = :branchId`;
-              replacements.branchId = branchFilter.branch_id;
-            }
-          }
-
-          query += ` GROUP BY DATE_TRUNC('${truncType}', created_at) ORDER BY DATE_TRUNC('${truncType}', created_at) ASC`;
-
-          salesTrendRaw = await sequelize.query(query, {
-            replacements,
-            type: sequelize.QueryTypes.SELECT,
-          });
-
-          groupBy = Sequelize.literal(`DATE_TRUNC('${truncType}', created_at)`);
-        }
-
-        const allDayItems = await InvoiceItem.schema(schema).findAll({
-          include: [
-            {
-              model: Invoice.schema(schema),
-              where: combinedFilter,
-              attributes: ["id", "created_at"],
-            },
-            {
-              model: InventoryItem.schema(schema),
-              as: "inventory_item",
-              attributes: ["cost_per_meter"],
-            },
-          ],
-          attributes: ["total_price", "meters", "invoice_id"],
-        });
-
-        const itemsByDate = {};
-        allDayItems.forEach((item) => {
-          if (item.invoice && item.invoice.created_at) {
-            const invoiceDate = new Date(item.invoice.created_at);
-            let groupKey;
-
-            if (daysDiff <= 30) {
-
-              groupKey = invoiceDate.toISOString().split("T")[0];
-            } else if (daysDiff <= 90) {
-
-              const weekStart = new Date(invoiceDate);
-              const dayOfWeek = invoiceDate.getDay();
-              const diff =
-                invoiceDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-              weekStart.setDate(diff);
-              weekStart.setHours(0, 0, 0, 0);
-              groupKey = weekStart.toISOString().split("T")[0];
-            } else {
-
-              const monthStart = new Date(
-                invoiceDate.getFullYear(),
-                invoiceDate.getMonth(),
-                1,
-              );
-              groupKey = monthStart.toISOString().split("T")[0];
-            }
-
-            if (!itemsByDate[groupKey]) {
-              itemsByDate[groupKey] = [];
-            }
-            itemsByDate[groupKey].push(item);
-          }
-        });
-
-        const salesTrendWithProfit = salesTrendRaw.map((period) => {
-
-          let periodKey;
-          if (period.date) {
-            const periodDate = new Date(period.date);
-            if (daysDiff <= 30) {
-              periodKey = periodDate.toISOString().split("T")[0];
-            } else if (daysDiff <= 90) {
-
-              const weekStart = new Date(periodDate);
-              const dayOfWeek = periodDate.getDay();
-              const diff =
-                periodDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-              weekStart.setDate(diff);
-              weekStart.setHours(0, 0, 0, 0);
-              periodKey = weekStart.toISOString().split("T")[0];
-            } else {
-
-              const monthStart = new Date(
-                periodDate.getFullYear(),
-                periodDate.getMonth(),
-                1,
-              );
-              periodKey = monthStart.toISOString().split("T")[0];
-            }
-          }
-
-          const periodItems = itemsByDate[periodKey] || [];
-          let periodCost = 0;
-          periodItems.forEach((item) => {
-            periodCost +=
-              parseFloat(item.inventory_item?.cost_per_meter || 0) *
-              parseFloat(item.meters);
-          });
-
-          return {
-            date: period.date,
-            revenue: parseFloat(period.revenue) || 0,
-            profit: (parseFloat(period.revenue) || 0) - periodCost,
-            meters: parseFloat(period.meters ?? period.meters) || 0,
-            quantity: parseInt(period.quantity) || 0,
-          };
-        });
-
-        let categoryQuery = `
-          SELECT ii.fabric_type AS name, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity
-          FROM "${schema}".invoice_items it
-          INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-          INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-          WHERE inv.created_at BETWEEN :start AND :end
-        `;
-
-        const categoryReplacements = {
-          start: startDateObj,
-          end: endDateObj,
-        };
-
-        if (branchFilter.branch_id) {
-          if (branchFilter.branch_id[Op.in]) {
-            categoryQuery += ` AND inv.branch_id IN (:branchIds)`;
-            categoryReplacements.branchIds = branchFilter.branch_id[Op.in];
-          } else if (typeof branchFilter.branch_id === "number") {
-            categoryQuery += ` AND inv.branch_id = :branchId`;
-            categoryReplacements.branchId = branchFilter.branch_id;
-          }
-        }
-
-        categoryQuery += ` GROUP BY ii.fabric_type ORDER BY SUM(it.total_price) DESC`;
-
-        const categoryRaw = await sequelize.query(categoryQuery, {
-          replacements: categoryReplacements,
-          type: sequelize.QueryTypes.SELECT,
-        });
-
-        const allCategoryItems = await InvoiceItem.schema(schema).findAll({
-          include: [
-            {
-              model: Invoice.schema(schema),
-              where: combinedFilter,
-              attributes: [],
-            },
-            {
-              model: InventoryItem.schema(schema),
-              as: "inventory_item",
-              attributes: ["cost_per_meter", "pattern"],
-            },
-          ],
-          attributes: ["total_price", "meters", "quantity"],
-        });
-
-        const itemsByCategory = {};
-        allCategoryItems.forEach((item) => {
-          const pattern = item.inventory_item?.pattern;
-          if (pattern) {
-            if (!itemsByCategory[pattern]) {
-              itemsByCategory[pattern] = [];
-            }
-            itemsByCategory[pattern].push(item);
-          }
-        });
-
-        const categoryDistribution = categoryRaw.map((cat) => {
-          const catItems = itemsByCategory[cat.name] || [];
-          let catCost = 0;
-          catItems.forEach((item) => {
-            catCost +=
-              parseFloat(item.inventory_item?.cost_per_meter || 0) *
-              parseFloat(item.meters);
-          });
-
-          return {
-            name: cat.name,
-            revenue: parseFloat(cat.revenue) || 0,
-            profit: (parseFloat(cat.revenue) || 0) - catCost,
-            quantity: parseInt(cat.quantity) || 0,
-          };
-        });
-
-        let fabricQuery = `
-          SELECT it.fabric_type, SUM(it.total_price) AS revenue, COUNT(it.id) AS quantity, SUM(it.meters * COALESCE(it.quantity,1)) AS meters
-          FROM "${schema}".invoice_items it
-          INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-          INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-          WHERE inv.created_at BETWEEN :start AND :end
-            AND it.fabric_type IS NOT NULL
-        `;
-
-        const fabricReplacements = {
-          start: startDateObj,
-          end: endDateObj,
-        };
-
-        if (branchFilter.branch_id) {
-          if (branchFilter.branch_id[Op.in]) {
-            fabricQuery += ` AND inv.branch_id IN (:branchIds)`;
-            fabricReplacements.branchIds = branchFilter.branch_id[Op.in];
-          } else if (typeof branchFilter.branch_id === "number") {
-            fabricQuery += ` AND inv.branch_id = :branchId`;
-            fabricReplacements.branchId = branchFilter.branch_id;
-          }
-        }
-
-        fabricQuery += `
-          AND it.fabric_type IS NOT NULL
-          GROUP BY it.fabric_type
-          ORDER BY it.fabric_type ASC`;
-
-        const fabricRaw = await sequelize.query(fabricQuery, {
-          replacements: fabricReplacements,
-          type: sequelize.QueryTypes.SELECT,
-        });
-
-        const allFabricItems = await InvoiceItem.schema(schema).findAll({
-          include: [
-            {
-              model: InventoryItem.schema(schema),
-              as: "inventory_item",
-              attributes: ["cost_per_meter", "fabric_type"],
-            },
-          ],
-          attributes: ["total_price", "meters"],
-        });
-
-        const itemsByFabric = {};
-        allFabricItems.forEach((item) => {
-          const fabricKey = item.inventory_item?.fabric_type || "Other";
-          if (!itemsByFabric[fabricKey]) itemsByFabric[fabricKey] = [];
-          itemsByFabric[fabricKey].push(item);
-        });
-
-        const fabricDistribution = fabricRaw.map((row) => {
-          const fabricKey = row.fabric_type || "Other";
-          const fabricItems = itemsByFabric[fabricKey] || [];
-          let fabricCost = 0;
-          fabricItems.forEach((item) => {
-            fabricCost +=
-              parseFloat(item.inventory_item?.cost_per_meter || 0) *
-              (parseFloat(item.meters) || 0);
-          });
-
-          return {
-            fabric_type: fabricKey,
-            revenue: parseFloat(row.revenue) || 0,
-            profit: (parseFloat(row.revenue) || 0) - fabricCost,
-            quantity: parseInt(row.quantity) || 0,
-            meters: parseFloat(row.meters) || 0,
-          };
-        });
-
-        const branchRaw = await Invoice.schema(schema).findAll({
-          attributes: [
-            "branch_id",
-            [Sequelize.fn("SUM", Sequelize.col("total_amount")), "revenue"],
-            [Sequelize.fn("COUNT", Sequelize.col("id")), "quantity"],
-          ],
-          where: combinedFilter,
-          group: ["branch_id"],
-          raw: true,
-        });
-
-        const [branches, allBranchItems] = await Promise.all([
-          Branch.schema(schema).findAll({
-            where: {
-              id: { [Op.in]: branchRaw.map((bp) => bp.branch_id) },
-            },
-            attributes: ["id", "name"],
-          }),
-          InvoiceItem.schema(schema).findAll({
-            include: [
-              {
-                model: Invoice.schema(schema),
-                where: combinedFilter,
-                attributes: ["id", "branch_id"],
-              },
-              {
-                model: InventoryItem.schema(schema),
-                as: "inventory_item",
-                attributes: ["cost_per_meter"],
-              },
-            ],
-            attributes: ["total_price", "meters", "invoice_id"],
-          }),
+              COALESCE(SUM(inv.total_amount), 0) AS revenue,
+              COALESCE(SUM(inv.total_meters), 0) AS meters_sold,
+              COUNT(inv.id)::int AS transactions,
+              COALESCE((
+                SELECT SUM(COALESCE(it.cost_per_meter_snapshot, ii.cost_per_meter, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1))
+                FROM "${schema}".invoice_items it
+                INNER JOIN "${schema}".invoices inv2 ON it.invoice_id = inv2.id
+                LEFT JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+                WHERE inv2.created_at BETWEEN :start AND :end
+                  AND inv2.status IN ('Paid', 'Partially Refunded')
+                  ${branchSql.replace(/inv\./g, "inv2.")}
+              ), 0) AS total_cost,
+              COALESCE((
+                SELECT SUM(COALESCE(it.quantity, 1))::int
+                FROM "${schema}".invoice_items it
+                INNER JOIN "${schema}".invoices inv2 ON it.invoice_id = inv2.id
+                WHERE inv2.created_at BETWEEN :start AND :end
+                  AND inv2.status IN ('Paid', 'Partially Refunded')
+                  ${branchSql.replace(/inv\./g, "inv2.")}
+              ), 0) AS total_quantity
+            FROM "${schema}".invoices inv
+            WHERE inv.created_at BETWEEN :start AND :end
+              AND inv.status IN ('Paid', 'Partially Refunded')
+              ${branchSql}
+            `,
+            { replacements: baseReplacements, type: sequelize.QueryTypes.SELECT },
+          ),
+          sequelize.query(
+            `
+            SELECT
+              COALESCE(SUM(r.total_amount), 0) AS refunded_amount,
+              COALESCE((
+                SELECT SUM(COALESCE(ri.meters, 0) * COALESCE(ri.quantity_refunded, 1))
+                FROM "${schema}".refund_items ri
+                INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+                INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+                WHERE inv2.created_at BETWEEN :start AND :end
+                  AND inv2.status = 'Partially Refunded'
+                  AND r2.status = 'Completed'
+                  ${branchSql.replace(/inv\./g, "inv2.")}
+              ), 0) AS refunded_meters,
+              COALESCE((
+                SELECT SUM(COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(ri.meters, 0) * COALESCE(ri.quantity_refunded, 1))
+                FROM "${schema}".refund_items ri
+                INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+                INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+                LEFT JOIN "${schema}".invoice_items it ON ri.invoice_item_id = it.id
+                WHERE inv2.created_at BETWEEN :start AND :end
+                  AND inv2.status = 'Partially Refunded'
+                  AND r2.status = 'Completed'
+                  ${branchSql.replace(/inv\./g, "inv2.")}
+              ), 0) AS refunded_cost
+            FROM "${schema}".refunds r
+            INNER JOIN "${schema}".invoices inv ON r.invoice_id = inv.id
+            WHERE inv.created_at BETWEEN :start AND :end
+              AND inv.status = 'Partially Refunded'
+              AND r.status = 'Completed'
+              ${branchSql}
+            `,
+            { replacements: baseReplacements, type: sequelize.QueryTypes.SELECT },
+          ),
+          sequelize.query(
+            `
+            SELECT
+              DATE_TRUNC('${truncUnit}', inv.created_at) AS date,
+              COALESCE(SUM(inv.total_amount), 0) AS revenue,
+              COALESCE(SUM(inv.total_meters), 0) AS meters,
+              COUNT(inv.id)::int AS quantity,
+              COALESCE(SUM(item_costs.cost), 0) AS cost
+            FROM "${schema}".invoices inv
+            LEFT JOIN (
+              SELECT
+                it.invoice_id,
+                SUM(COALESCE(it.cost_per_meter_snapshot, ii.cost_per_meter, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)) AS cost
+              FROM "${schema}".invoice_items it
+              LEFT JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+              GROUP BY it.invoice_id
+            ) item_costs ON item_costs.invoice_id = inv.id
+            WHERE inv.created_at BETWEEN :start AND :end
+              AND inv.status IN ('Paid', 'Partially Refunded')
+              ${branchSql}
+            GROUP BY DATE_TRUNC('${truncUnit}', inv.created_at)
+            ORDER BY DATE_TRUNC('${truncUnit}', inv.created_at) ASC
+            `,
+            { replacements: baseReplacements, type: sequelize.QueryTypes.SELECT },
+          ),
+          sequelize.query(
+            `
+            SELECT
+              COALESCE(NULLIF(ii.pattern, ''), COALESCE(it.fabric_type, ii.fabric_type, 'Other')) AS name,
+              COALESCE(SUM(it.total_price), 0) AS revenue,
+              COALESCE(SUM(COALESCE(it.cost_per_meter_snapshot, ii.cost_per_meter, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)), 0) AS cost,
+              COALESCE(SUM(COALESCE(it.quantity, 1)), 0)::int AS quantity
+            FROM "${schema}".invoice_items it
+            INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+            LEFT JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+            WHERE inv.created_at BETWEEN :start AND :end
+              AND inv.status IN ('Paid', 'Partially Refunded')
+              ${branchSql}
+            GROUP BY COALESCE(NULLIF(ii.pattern, ''), COALESCE(it.fabric_type, ii.fabric_type, 'Other'))
+            ORDER BY revenue DESC
+            `,
+            { replacements: baseReplacements, type: sequelize.QueryTypes.SELECT },
+          ),
+          sequelize.query(
+            `
+            SELECT
+              COALESCE(it.fabric_type, ii.fabric_type, 'Other') AS fabric_type,
+              COALESCE(SUM(it.total_price), 0) AS revenue,
+              COALESCE(SUM(COALESCE(it.cost_per_meter_snapshot, ii.cost_per_meter, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)), 0) AS cost,
+              COALESCE(SUM(COALESCE(it.quantity, 1)), 0)::int AS quantity,
+              COALESCE(SUM(COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)), 0) AS meters
+            FROM "${schema}".invoice_items it
+            INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+            LEFT JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+            WHERE inv.created_at BETWEEN :start AND :end
+              AND inv.status IN ('Paid', 'Partially Refunded')
+              ${branchSql}
+            GROUP BY COALESCE(it.fabric_type, ii.fabric_type, 'Other')
+            ORDER BY revenue DESC
+            `,
+            { replacements: baseReplacements, type: sequelize.QueryTypes.SELECT },
+          ),
+          sequelize.query(
+            `
+            SELECT
+              inv.branch_id,
+              COALESCE(b.name, 'Unknown') AS name,
+              COALESCE(SUM(inv.total_amount), 0) AS revenue,
+              COUNT(inv.id)::int AS quantity,
+              COALESCE(SUM(item_costs.cost), 0) AS cost
+            FROM "${schema}".invoices inv
+            LEFT JOIN "${schema}".branches b ON b.id = inv.branch_id
+            LEFT JOIN (
+              SELECT
+                it.invoice_id,
+                SUM(COALESCE(it.cost_per_meter_snapshot, ii.cost_per_meter, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)) AS cost
+              FROM "${schema}".invoice_items it
+              LEFT JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+              GROUP BY it.invoice_id
+            ) item_costs ON item_costs.invoice_id = inv.id
+            WHERE inv.created_at BETWEEN :start AND :end
+              AND inv.status IN ('Paid', 'Partially Refunded')
+              ${branchSql}
+            GROUP BY inv.branch_id, b.name
+            ORDER BY revenue DESC
+            `,
+            { replacements: baseReplacements, type: sequelize.QueryTypes.SELECT },
+          ),
         ]);
 
-        const branchMap = {};
-        branches.forEach((b) => {
-          branchMap[b.id] = b.name;
-        });
+        const refundedAmount = parseFloat(refundTotals.refunded_amount || 0);
+        const refundedMeters = parseFloat(refundTotals.refunded_meters || 0);
+        const refundedCost = parseFloat(refundTotals.refunded_cost || 0);
 
-        const itemsByBranch = {};
-        allBranchItems.forEach((item) => {
-          const branchId = item.invoice?.branch_id;
-          if (branchId) {
-            if (!itemsByBranch[branchId]) {
-              itemsByBranch[branchId] = [];
-            }
-            itemsByBranch[branchId].push(item);
-          }
-        });
+        const totalRevenue = Math.max(0, parseFloat(kpiRow.revenue || 0) - refundedAmount);
+        const totalCost = Math.max(0, parseFloat(kpiRow.total_cost || 0) - refundedCost);
+        const grossProfit = totalRevenue - totalCost;
+        const totalMetersSold = Math.max(0, parseFloat(kpiRow.meters_sold || 0) - refundedMeters);
+        const totalTransactions = parseInt(kpiRow.transactions || 0, 10);
+        const totalQuantity = parseInt(kpiRow.total_quantity || 0, 10);
 
-        const branchPerformance = branchRaw.map((bp) => {
-          const branchItems = itemsByBranch[bp.branch_id] || [];
-          let branchCost = 0;
-          branchItems.forEach((item) => {
-            branchCost +=
-              parseFloat(item.inventory_item?.cost_per_meter || 0) *
-              parseFloat(item.meters);
-          });
-
+        const salesTrendWithProfit = salesTrendRows.map((row) => {
+          const rev = parseFloat(row.revenue || 0);
+          const cost = parseFloat(row.cost || 0);
           return {
-            name: branchMap[bp.branch_id] || "Unknown",
-            revenue: parseFloat(bp.revenue) || 0,
-            profit: (parseFloat(bp.revenue) || 0) - branchCost,
-            quantity: parseInt(bp.quantity) || 0,
+            date: row.date instanceof Date ? row.date.toISOString().split("T")[0] : row.date,
+            revenue: rev,
+            profit: rev - cost,
+            meters: parseFloat(row.meters || 0),
+            quantity: parseInt(row.quantity || 0, 10),
+          };
+        });
+
+        const categoryDistribution = categoryRows.map((row) => {
+          const rev = parseFloat(row.revenue || 0);
+          const cost = parseFloat(row.cost || 0);
+          return {
+            name: row.name,
+            revenue: rev,
+            profit: rev - cost,
+            quantity: parseInt(row.quantity || 0, 10),
+          };
+        });
+
+        const fabricDistribution = fabricRows.map((row) => {
+          const rev = parseFloat(row.revenue || 0);
+          const cost = parseFloat(row.cost || 0);
+          return {
+            fabric_type: row.fabric_type,
+            revenue: rev,
+            profit: rev - cost,
+            quantity: parseInt(row.quantity || 0, 10),
+            meters: parseFloat(row.meters || 0),
+          };
+        });
+
+        const branchPerformance = branchRows.map((row) => {
+          const rev = parseFloat(row.revenue || 0);
+          const cost = parseFloat(row.cost || 0);
+          return {
+            name: row.name || "Unknown",
+            revenue: rev,
+            profit: rev - cost,
+            quantity: parseInt(row.quantity || 0, 10),
           };
         });
 
@@ -1600,6 +1487,7 @@ export const getDashboardAnalytics = async (req, res) => {
           },
           charts: {
             sales_trend: salesTrendWithProfit,
+            category_distribution: categoryDistribution,
             pattern_distribution: categoryDistribution,
             fabric_distribution: fabricDistribution,
             branch_performance: branchPerformance,
@@ -1617,7 +1505,11 @@ export const getDashboardAnalytics = async (req, res) => {
       }
     };
 
-    const cacheKey = `analytics:${req.tenant.slug}:${startDate}:${endDate}:${branchIds || "all"}`;
+    const effectiveBranchKey =
+      req.user.role !== "store_owner"
+        ? `b_${req.user.branch_id}`
+        : branchIds || "all";
+    const cacheKey = `analytics:${req.tenant.slug}:${startDate}:${endDate}:${effectiveBranchKey}:${compare}:${compareType}`;
     let dataSource = "live";
     let lastUpdated = new Date().toISOString();
     let nextUpdate = null;
@@ -1822,118 +1714,80 @@ export const getTopItems = async (req, res) => {
     } = req.query;
     const schema = req.tenant.db_schema;
 
-    let branchFilter = {};
-    if (branchIds) {
-      const branchArray = branchIds.split(",").map((id) => parseInt(id));
+    const parsedLimit = Math.min(Math.max(1, parseInt(limit, 10) || 10), 100);
+    const replacements = {
+      startDate: startDate ? new Date(startDate) : new Date(0),
+      endDate: endDate ? new Date(endDate) : new Date(),
+      limit: parsedLimit,
+    };
+
+    let branchSql = "";
+    if (req.user.role !== "store_owner") {
+      branchSql = "AND inv.branch_id = :branchId";
+      replacements.branchId = req.user.branch_id;
+    } else if (branchIds) {
+      const branchArray = String(branchIds)
+        .split(",")
+        .map((id) => parseInt(id.trim(), 10))
+        .filter((id) => Number.isFinite(id) && id > 0);
       if (branchArray.length > 0) {
-        branchFilter.branch_id = { [Op.in]: branchArray };
+        branchSql = "AND inv.branch_id IN (:branchIds)";
+        replacements.branchIds = branchArray;
       }
     }
 
-    const dateFilter = {};
-    if (startDate && endDate) {
-      dateFilter.createdAt = { [Op.between]: [startDate, endDate] };
-    }
+    const orderColumn =
+      metric === "profit"
+        ? "profit"
+        : metric === "quantity"
+          ? "quantity"
+          : metric === "meters"
+            ? "meters"
+            : "revenue";
 
-    const combinedFilter = { ...dateFilter, ...branchFilter };
-
-    const topItems = await sequelize.query(
+    const rows = await sequelize.query(
       `
       SELECT
         ii.id,
         ii.item_name AS name,
-        ii.fabric_type,
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity,
-        SUM(it.meters * COALESCE(it.quantity,1)) AS meters
+        ii.pattern,
+        COALESCE(ii.fabric_type, it.fabric_type) AS fabric_type,
+        COALESCE(SUM(it.total_price), 0) AS revenue,
+        COALESCE(SUM(it.total_price), 0) - COALESCE(SUM(
+          COALESCE(it.cost_per_meter_snapshot, ii.cost_per_meter, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)
+        ), 0) AS profit,
+        COALESCE(SUM(COALESCE(it.quantity, 1)), 0)::int AS quantity,
+        COALESCE(SUM(COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)), 0) AS meters
       FROM "${schema}".invoice_items it
       INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
       INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
       WHERE inv.created_at BETWEEN :startDate AND :endDate
-      ${branchFilter.branch_id ? `AND inv.branch_id IN (:branchIds)` : ""}
-      GROUP BY ii.id, ii.item_name, it.fabric_type, it.color, ii.fabric_type
-      ORDER BY revenue DESC
+        AND inv.status IN ('Paid', 'Partially Refunded')
+        ${branchSql}
+      GROUP BY ii.id, ii.item_name, ii.pattern, COALESCE(ii.fabric_type, it.fabric_type)
+      ORDER BY ${orderColumn} DESC
       LIMIT :limit
-    `,
+      `,
       {
-        replacements: {
-          startDate: dateFilter.createdAt?.[Op.between]?.[0] || new Date(0),
-          endDate: dateFilter.createdAt?.[Op.between]?.[1] || new Date(),
-          branchIds: branchFilter.branch_id?.[Op.in] || [],
-          limit: parseInt(limit) * 2,
-        },
+        replacements,
         type: sequelize.QueryTypes.SELECT,
       },
     );
 
-    const itemIds = topItems.map((item) => item.id);
-    const allItemDetails = await InvoiceItem.schema(schema).findAll({
-      include: [
-        {
-          model: Invoice.schema(schema),
-          where: combinedFilter,
-          attributes: [],
-        },
-        {
-          model: InventoryItem.schema(schema),
-          as: "inventory_item",
-          where: { id: { [Op.in]: itemIds } },
-          attributes: ["id", "cost_per_meter", "fabric_type"],
-        },
-      ],
-      attributes: ["total_price", "meters", "inventory_item_id"],
-    });
-
-    const detailsByItemId = {};
-    allItemDetails.forEach((detail) => {
-      const itemId = detail.inventory_item_id;
-      if (itemId) {
-        if (!detailsByItemId[itemId]) {
-          detailsByItemId[itemId] = [];
-        }
-        detailsByItemId[itemId].push(detail);
-      }
-    });
-
-    const inventoryItemsById = {};
-    allItemDetails.forEach((detail) => {
-      if (detail.inventory_item) {
-        inventoryItemsById[detail.inventory_item.id] = detail.inventory_item;
-      }
-    });
-
-    const itemsWithProfit = topItems.map((item) => {
-      const itemDetails = detailsByItemId[item.id] || [];
-      const inventoryItem = inventoryItemsById[item.id];
-
-      let cost = 0;
-      itemDetails.forEach((detail) => {
-        const buyPrice = parseFloat(detail.inventory_item?.cost_per_meter || 0);
-        const meters =
-          parseFloat(detail.meters || 0) *
-          (parseInt(detail.quantity, 10) || 1);
-        cost += buyPrice * meters;
-      });
-      void inventoryItem;
-
-      return {
-        id: item.id,
-        name: item.name,
-        pattern: item.pattern,
-        fabric_type: item.fabric_type || null,
-        revenue: parseFloat(item.revenue) || 0,
-        profit: (parseFloat(item.revenue) || 0) - cost,
-        quantity: parseInt(item.quantity) || 0,
-        meters: parseFloat(item.meters) || 0,
-      };
-    });
-
-    itemsWithProfit.sort((a, b) => b[metric] - a[metric]);
+    const data = rows.map((item) => ({
+      id: item.id,
+      name: item.name,
+      pattern: item.pattern || null,
+      fabric_type: item.fabric_type || null,
+      revenue: parseFloat(item.revenue) || 0,
+      profit: parseFloat(item.profit) || 0,
+      quantity: parseInt(item.quantity, 10) || 0,
+      meters: parseFloat(item.meters) || 0,
+    }));
 
     res.json({
       success: true,
-      data: itemsWithProfit.slice(0, parseInt(limit)),
+      data,
     });
   } catch (error) {
     logger.error("Top Items Error", {

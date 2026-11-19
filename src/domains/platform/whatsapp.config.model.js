@@ -46,6 +46,14 @@ const WhatsappConfig = sequelize.define('WhatsappConfig', {
       unique: true,
       fields: ['tenant_slug', 'branch_id'],
       name: 'whatsapp_configs_tenant_branch_unique'
+    },
+    {
+      unique: true,
+      fields: ['tenant_slug'],
+      where: {
+        branch_id: null
+      },
+      name: 'whatsapp_configs_tenant_central_unique'
     }
   ]
 });

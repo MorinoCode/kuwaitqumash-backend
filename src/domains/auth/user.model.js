@@ -35,6 +35,11 @@ const User = sequelize.define('User', {
   is_active: {
     type: DataTypes.BOOLEAN,
     defaultValue: true
+  },
+  token_version: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0
   }
 }, {
   tableName: 'users',
@@ -51,6 +56,14 @@ const User = sequelize.define('User', {
       if (user.changed('password')) {
         const salt = await bcrypt.genSalt(10);
         user.password = await bcrypt.hash(user.password, salt);
+        if (!user.changed('token_version')) {
+          user.token_version = (user.token_version || 0) + 1;
+        }
+      }
+      if (user.changed('is_active') && user.is_active === false) {
+        if (!user.changed('token_version')) {
+          user.token_version = (user.token_version || 0) + 1;
+        }
       }
     }
   }

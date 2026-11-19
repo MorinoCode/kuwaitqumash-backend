@@ -1,192 +1,308 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import {
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import sharp from "sharp";
-import fs from "fs";
-import { v2 as cloudinary } from "cloudinary";
 import logger from "./logger.js";
 
-sharp.cache(false);
-
-const cloudinaryConfigured = Boolean(
-  process.env.CLOUDINARY_CLOUD_NAME &&
-  process.env.CLOUDINARY_API_KEY &&
-  process.env.CLOUDINARY_API_SECRET
-);
-
-if (cloudinaryConfigured) {
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET,
-  });
-} else {
-  logger.warn("Cloudinary is not configured, image uploads are skipped.", {
-    component: "fileUpload",
-  });
-}
-
-const ROOT = process.env.CLOUDINARY_FOLDER || "kuwaitqumash";
-
-const sanitizeSegment = (s) =>
-  (s || "")
+const sanitizeSegment = (value) =>
+  String(value || "")
     .replace(/[^a-zA-Z0-9_-]/g, "_")
     .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "") || "general";
+    .replace(/^_|_$/g, "");
 
-const buildPath = (store, folderType, subPath) => {
-  const safeStore = sanitizeSegment(String(store));
-  const parts = (subPath || "general")
-    .split("/")
-    .map(sanitizeSegment)
-    .filter(Boolean);
-  const subFolder = parts.length ? parts.join("/") : "general";
-  return {
-    safeStore,
-    subFolder,
-    full: `${safeStore}/${folderType}/${subFolder}`,
-  };
+export const getR2Config = () => {
+  const accountId = (process.env.R2_ACCOUNT_ID || "").trim();
+  const endpoint = (
+    process.env.R2_ENDPOINT ||
+    (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "")
+  )
+    .trim()
+    .replace(/\/+$/, "");
+  const accessKeyId = (process.env.R2_ACCESS_KEY_ID || "").trim();
+  const secretAccessKey = (process.env.R2_SECRET_ACCESS_KEY || "").trim();
+  const bucket = (process.env.R2_BUCKET_NAME || "").trim();
+  const publicUrl = (process.env.R2_PUBLIC_URL || "").trim().replace(/\/+$/, "");
+  const prefix = sanitizeSegment(process.env.R2_FOLDER || "kuwaitqumash") || "kuwaitqumash";
+
+  const configured = Boolean(endpoint && accessKeyId && secretAccessKey && bucket && publicUrl);
+  return { endpoint, accessKeyId, secretAccessKey, bucket, publicUrl, prefix, configured };
 };
 
-export const saveImage = async (file, folderType, subFolder, store) => {
-  if (!file) return null;
+let cachedClientKey = "";
+let cachedClient = null;
+let warnedUnconfigured = false;
 
-  if (!cloudinaryConfigured) {
-    try {
-      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-    } catch { void 0; }
+const getS3Client = (cfg) => {
+  if (!cfg.configured) {
+    if (!warnedUnconfigured) {
+      warnedUnconfigured = true;
+      logger.warn("Cloudflare R2 is not configured, image uploads are skipped.", {
+        component: "fileUpload",
+      });
+    }
     return null;
   }
 
-  const storeVal = store || "default";
-  const {
-    full,
-  } = buildPath(storeVal, folderType, subFolder);
+  const key = `${cfg.endpoint}|${cfg.accessKeyId}|${cfg.bucket}`;
+  if (cachedClient && cachedClientKey === key) {
+    return cachedClient;
+  }
 
-  const filename = `${folderType}-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+  cachedClient = new S3Client({
+    region: "auto",
+    endpoint: cfg.endpoint,
+    credentials: {
+      accessKeyId: cfg.accessKeyId,
+      secretAccessKey: cfg.secretAccessKey,
+    },
+  });
+  cachedClientKey = key;
+  return cachedClient;
+};
 
-  const processedBuffer = await sharp(file.path)
-    .resize(600, 600, { fit: "inside", withoutEnlargement: true })
-    .webp({ quality: 75 })
-    .toBuffer();
+const readUploadedBuffer = async (file) => {
+  if (Buffer.isBuffer(file?.buffer) && file.buffer.length > 0) {
+    return file.buffer;
+  }
+  if (file?.path) {
+    return fs.promises.readFile(file.path);
+  }
+  throw new Error("Uploaded file has neither buffer nor path.");
+};
 
-  setTimeout(() => {
-    try {
-      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-    } catch (e) {
-      logger.warn("Temp file cleanup failed", {
+const removeTempFile = async (file) => {
+  if (!file?.path) return;
+  try {
+    await fs.promises.unlink(file.path);
+  } catch (err) {
+    if (err?.code !== "ENOENT") {
+      logger.debug("Temp file cleanup failed", {
         component: "fileUpload",
-        error: e?.message,
+        path: file.path,
+        error: err?.message,
       });
     }
-  }, 1000);
+  }
+};
 
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader
-      .upload_stream(
-        {
-          folder: `${ROOT}/${full}`,
-          public_id: filename,
-          resource_type: "image",
-          format: "webp",
-        },
-        (error, result) => {
-          if (error) {
-            logger.error("Cloudinary upload failed", {
-              component: "fileUpload",
-              error: error?.message,
-            });
-            reject(
-              new Error(
-                `Failed to upload image to Cloudinary: ${error?.message}`,
-              ),
-            );
-          } else {
-            resolve(result.secure_url);
-          }
-        },
-      )
-      .end(processedBuffer);
-  });
+export const buildObjectKey = (segments) =>
+  segments
+    .map((segment) => sanitizeSegment(segment))
+    .filter(Boolean)
+    .join("/");
+
+export const extractObjectKeyFromUrl = (imageUrl) => {
+  if (!imageUrl || typeof imageUrl !== "string") return null;
+
+  const { publicUrl, bucket } = getR2Config();
+  const trimmed = imageUrl.trim();
+
+  if (publicUrl && trimmed.startsWith(`${publicUrl}/`)) {
+    return trimmed.slice(publicUrl.length + 1);
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const pathname = parsed.pathname.replace(/^\/+/, "");
+    if (!pathname) return null;
+    if (bucket && pathname.startsWith(`${bucket}/`)) {
+      return pathname.slice(bucket.length + 1);
+    }
+    return pathname;
+  } catch {
+    return null;
+  }
+};
+
+const uploadBufferToR2 = async ({ buffer, key, contentType }) => {
+  const cfg = getR2Config();
+  const client = getS3Client(cfg);
+  if (!client) return null;
+
+  await client.send(
+    new PutObjectCommand({
+      Bucket: cfg.bucket,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+      CacheControl: "public, max-age=31536000, immutable",
+    }),
+  );
+
+  return `${cfg.publicUrl}/${key}`;
+};
+
+export const saveImage = async (
+  file,
+  folderType = "general",
+  subFolder = "",
+  store = null,
+) => {
+  if (!file) return null;
+
+  const cfg = getR2Config();
+  if (!getS3Client(cfg)) {
+    await removeTempFile(file);
+    return null;
+  }
+
+  try {
+    const rawBuffer = await readUploadedBuffer(file);
+    const compressedBuffer = await sharp(rawBuffer)
+      .resize(600, 600, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toBuffer();
+
+    const fileId = crypto.randomUUID();
+    const dirKey = buildObjectKey([
+      cfg.prefix,
+      store,
+      folderType,
+      subFolder,
+    ]);
+    const key = path.posix.join(dirKey, `${fileId}.webp`);
+
+    return await uploadBufferToR2({
+      buffer: compressedBuffer,
+      key,
+      contentType: "image/webp",
+    });
+  } catch (error) {
+    logger.error("Failed to process/upload image to R2", {
+      component: "fileUpload",
+      error: error?.message,
+    });
+    throw new Error("Image upload failed");
+  } finally {
+    await removeTempFile(file);
+  }
 };
 
 export const saveBranchLogo = async (file, store, branchId) => {
   if (!file) return null;
 
-  const storeVal = store || "default";
-  const safeStore = sanitizeSegment(String(storeVal));
-  const filename = `branch-logo-${branchId}-${Date.now()}`;
+  const cfg = getR2Config();
+  if (!getS3Client(cfg)) {
+    await removeTempFile(file);
+    return null;
+  }
 
-  const processedBuffer = await sharp(file.path)
-    .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
-    .png({ quality: 100, compressionLevel: 6, adaptiveFiltering: true })
-    .toBuffer();
+  try {
+    const rawBuffer = await readUploadedBuffer(file);
+    const pngBuffer = await sharp(rawBuffer)
+      .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
+      .png({ quality: 95, compressionLevel: 6 })
+      .toBuffer();
 
-  setTimeout(() => {
-    try {
-      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-    } catch (e) {
-      logger.warn("Temp file cleanup failed", {
-        component: "fileUpload",
-        error: e?.message,
-      });
-    }
-  }, 1000);
+    const dirKey = buildObjectKey([
+      cfg.prefix,
+      store,
+      "branches",
+      `branch_${branchId}`,
+    ]);
+    const key = path.posix.join(dirKey, `logo_${Date.now()}.png`);
 
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader
-      .upload_stream(
-        {
-          folder: `${ROOT}/${safeStore}/branches`,
-          public_id: filename,
-          resource_type: "image",
-          format: "png",
-        },
-        (error, result) => {
-          if (error) {
-            logger.error("Cloudinary upload failed for branch logo", {
-              component: "fileUpload",
-              error: error?.message,
-            });
-            reject(
-              new Error(
-                `Failed to upload branch logo to Cloudinary: ${error?.message}`,
-              ),
-            );
-          } else {
-            resolve(result.secure_url);
-          }
-        },
-      )
-      .end(processedBuffer);
-  });
+    return await uploadBufferToR2({
+      buffer: pngBuffer,
+      key,
+      contentType: "image/png",
+    });
+  } catch (error) {
+    logger.error("Failed to process/upload branch logo to R2", {
+      component: "fileUpload",
+      error: error?.message,
+    });
+    throw new Error("Logo upload failed");
+  } finally {
+    await removeTempFile(file);
+  }
 };
 
 export const deleteImage = async (imageUrl) => {
   if (!imageUrl) return;
 
-  if (imageUrl.includes("cloudinary.com")) {
-    try {
-      const splitUrl = imageUrl.split("/");
-      const folderStartIndex = splitUrl.findIndex((part) => part === ROOT);
+  const cfg = getR2Config();
+  const client = getS3Client(cfg);
+  if (!client) return;
 
-      if (folderStartIndex !== -1) {
-        const pathParts = splitUrl.slice(folderStartIndex);
-        const publicIdWithExt = pathParts.join("/");
-        const publicId = publicIdWithExt.replace(/\.[^/.]+$/, "");
-        await cloudinary.uploader.destroy(publicId);
-        logger.info("Image deleted from Cloudinary", {
-          component: "fileUpload",
-          publicId,
-        });
-      }
-    } catch (error) {
-      logger.warn("Cloudinary destroy failed", {
-        component: "fileUpload",
-        error: error?.message,
-      });
-    }
-  } else {
-    logger.warn("Image URL is not a Cloudinary URL, skipping delete", {
+  // Gracefully ignore non-R2 legacy URLs during Cloudinary -> R2 transition.
+  if (imageUrl.includes("res.cloudinary.com")) {
+    logger.debug("Skipping legacy Cloudinary delete after R2 migration", {
       component: "fileUpload",
-      imageUrl,
+    });
+    return;
+  }
+
+  const key = extractObjectKeyFromUrl(imageUrl);
+  if (!key) return;
+
+  try {
+    await client.send(
+      new DeleteObjectCommand({
+        Bucket: cfg.bucket,
+        Key: key,
+      }),
+    );
+  } catch (error) {
+    logger.error("Failed to delete image from R2", {
+      component: "fileUpload",
+      key,
+      error: error?.message,
     });
   }
 };
+
+export const deleteStoreFolder = async (store) => {
+  if (!store) return;
+
+  const cfg = getR2Config();
+  const client = getS3Client(cfg);
+  if (!client) return;
+
+  const prefix = buildObjectKey([cfg.prefix, store]);
+  if (!prefix) return;
+
+  try {
+    let continuationToken;
+    do {
+      const listRes = await client.send(
+        new ListObjectsV2Command({
+          Bucket: cfg.bucket,
+          Prefix: `${prefix}/`,
+          ContinuationToken: continuationToken,
+        }),
+      );
+
+      if (listRes.Contents && listRes.Contents.length > 0) {
+        const objects = listRes.Contents.map((item) => ({ Key: item.Key }));
+        await client.send(
+          new DeleteObjectsCommand({
+            Bucket: cfg.bucket,
+            Delete: { Objects: objects },
+          }),
+        );
+      }
+      continuationToken = listRes.NextContinuationToken;
+    } while (continuationToken);
+
+    logger.info("Purged store objects from R2", {
+      component: "fileUpload",
+      store,
+      prefix,
+    });
+  } catch (error) {
+    logger.warn("Failed to delete store folder from R2", {
+      component: "fileUpload",
+      store,
+      error: error?.message,
+    });
+  }
+};
+

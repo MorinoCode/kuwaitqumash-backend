@@ -123,6 +123,19 @@ test("protect rejects an inactive account", async (t) => {
   assert.equal(res.statusCode, 403);
 });
 
+test("protect rejects a token whose token_version is stale", async (t) => {
+  await withUserLookup(t, async () => ({ id: 1, is_active: true, token_version: 2 }));
+  const req = {
+    tenant,
+    headers: { authorization: `Bearer ${tokenFor({ tv: 1 })}` },
+    cookies: {},
+  };
+  const res = makeRes();
+  await protect(req, res, () => {});
+  assert.equal(res.statusCode, 401);
+  assert.match(res.body.message, /revoked|expired/i);
+});
+
 test("protect rejects a malformed token", async () => {
   const req = {
     tenant,

@@ -12,7 +12,7 @@ export const createBranch = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
     let { name, location, phone } = req.body;
-    name = name.toLowerCase();
+    name = String(name || "").trim();
 
     const existingBranch = await Branch.schema(schema).findOne({ where: { name: { [Op.iLike]: name } } });
     if (existingBranch) {
@@ -113,29 +113,36 @@ export const updateBranch = async (req, res) => {
       return res.status(404).json({ message: "Branch not found" });
     }
     if (
-      (req.user.role === "branch_manager" || req.user.role === "sales_man") &&
+      req.user.role !== "store_owner" &&
       branch.id !== req.user.branch_id
     ) {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    let updates = { location, phone };
+    let updates = {};
+    if (location !== undefined) updates.location = location;
+    if (phone !== undefined) updates.phone = phone;
     if (name) {
-      const lowerName = name.toLowerCase();
-      if (lowerName !== branch.name.toLowerCase()) {
-        const existingBranch = await Branch.schema(schema).findOne({ where: { name: { [Op.iLike]: lowerName } } });
+      const trimmedName = String(name).trim();
+      if (trimmedName.toLowerCase() !== branch.name.toLowerCase()) {
+        const existingBranch = await Branch.schema(schema).findOne({
+          where: { name: { [Op.iLike]: trimmedName } },
+        });
         if (existingBranch) {
           return res.status(400).json({ message: "Branch name already exists" });
         }
       }
-      updates.name = lowerName;
+      updates.name = trimmedName;
     }
-    const canManageWhatsappSettings =
-      req.user.role === "store_owner" || req.user.role === "branch_manager";
 
-    if (canManageWhatsappSettings) {
-      if (whatsapp_invoice_enabled !== undefined)
-        updates.whatsapp_invoice_enabled = whatsapp_invoice_enabled;
+    if (
+      (req.user.role === "store_owner" || req.user.role === "branch_manager") &&
+      whatsapp_invoice_enabled !== undefined
+    ) {
+      updates.whatsapp_invoice_enabled = whatsapp_invoice_enabled;
+    }
+
+    if (req.user.role === "store_owner") {
       if (whatsapp_invoice_to_store_enabled !== undefined)
         updates.whatsapp_invoice_to_store_enabled =
           whatsapp_invoice_to_store_enabled;
@@ -297,17 +304,24 @@ export const deleteBranch = async (req, res) => {
         .json({ message: "Cannot delete the Main Branch (HQ)." });
     }
 
-    const hasStaff = await User.schema(schema).findOne({
-      where: { branch_id: id, is_active: true },
-    });
-    if (hasStaff) {
-      return res.status(400).json({
+    const [staffCount, invoiceCount, inventoryCount] = await Promise.all([
+      User.schema(schema).count({ where: { branch_id: id } }),
+      Invoice.schema(schema).count({ where: { branch_id: id } }),
+      InventoryItem.schema(schema).count({ where: { branch_id: id } }),
+    ]);
+
+    if (staffCount > 0 || invoiceCount > 0 || inventoryCount > 0) {
+      return res.status(409).json({
         message:
-          "Cannot delete branch with active staff. Please reassign or deactivate them first.",
+          "Cannot delete branch with assigned staff, inventory items, or historical invoices.",
       });
     }
 
+    const oldLogo = branch.logo_url;
     await branch.destroy();
+    if (oldLogo) {
+      await deleteImage(oldLogo);
+    }
     res.json({ success: true, message: "Branch deleted successfully" });
   } catch (error) {
     logger.error("Management Error", {
@@ -526,7 +540,7 @@ export const getStaffAnalytics = async (req, res) => {
     }
 
     const invoices = await Invoice.schema(schema).findAll({
-      where: { created_by: id, status: "Paid" },
+      where: { created_by: id, status: { [Op.in]: ["Paid", "Partially Refunded"] } },
       include: [
         {
           model: InvoiceItem.schema(schema),
@@ -535,7 +549,7 @@ export const getStaffAnalytics = async (req, res) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["fabric_type"],
+              attributes: ["fabric_type", "pattern"],
             },
           ],
         },
@@ -585,37 +599,38 @@ export const getStaffAnalytics = async (req, res) => {
           (customerCount[inv.customer_id] || 0) + 1;
       }
 
-      inv.items.forEach((item) => {
-        totalItems += parseInt(item.quantity || 1);
-        totalMeters += parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
+      (inv.items || []).forEach((item) => {
+        const qty = parseInt(item.quantity, 10) || 1;
+        const itemMeters = parseFloat(item.meters || 0);
+        totalItems += qty;
+        totalMeters += itemMeters * qty;
 
         const fabricType =
-        item.fabric_type || item.inventory_item?.fabric_type || "Other";
+          item.fabric_type || item.inventory_item?.fabric_type || "Other";
         if (fabricType) {
-          fabricCount[fabricType] =
-            (fabricCount[fabricType] || 0) + parseInt(item.quantity || 1);
+          fabricCount[fabricType] = (fabricCount[fabricType] || 0) + qty;
         }
 
         const pattern = item.inventory_item?.pattern;
         if (pattern) {
-          patternCount[pattern] =
-            (patternCount[pattern] || 0) + parseInt(item.quantity || 1);
+          patternCount[pattern] = (patternCount[pattern] || 0) + qty;
         }
 
-        const buyPrice = parseFloat(item.buy_price_snapshot || 0);
+        const costPerMeter = parseFloat(item.cost_per_meter_snapshot || 0);
         const sellPrice = parseFloat(item.total_price || 0);
-        const itemWeight = parseFloat(item.weight || 0);
-        totalProfit += sellPrice - buyPrice * itemWeight;
+        totalProfit += sellPrice - costPerMeter * itemMeters * qty;
       });
     });
 
-    const preferredFabric = Object.keys(fabricCount).reduce((a, b) =>
-      fabricCount[a] > fabricCount[b] ? a : b,
-    );
+    const fabricKeys = Object.keys(fabricCount);
+    const preferredFabric = fabricKeys.length
+      ? fabricKeys.reduce((a, b) => (fabricCount[a] > fabricCount[b] ? a : b))
+      : null;
 
-    const preferredPattern = Object.keys(patternCount).reduce((a, b) =>
-      patternCount[a] > patternCount[b] ? a : b,
-    );
+    const patternKeys = Object.keys(patternCount);
+    const preferredPattern = patternKeys.length
+      ? patternKeys.reduce((a, b) => (patternCount[a] > patternCount[b] ? a : b))
+      : null;
 
     const avgSaleValue = totalSales / invoices.length;
 
@@ -630,9 +645,10 @@ export const getStaffAnalytics = async (req, res) => {
         daysBetween.reduce((a, b) => a + b, 0) / daysBetween.length;
     }
 
-    const bestDayOfWeek = Object.keys(dayOfWeekCount).reduce((a, b) =>
-      dayOfWeekCount[a] > dayOfWeekCount[b] ? a : b,
-    );
+    const dayKeys = Object.keys(dayOfWeekCount);
+    const bestDayOfWeek = dayKeys.length
+      ? dayKeys.reduce((a, b) => (dayOfWeekCount[a] > dayOfWeekCount[b] ? a : b))
+      : null;
     const dayNames = [
       "Sunday",
       "Monday",
@@ -643,9 +659,10 @@ export const getStaffAnalytics = async (req, res) => {
       "Saturday",
     ];
 
-    const bestMonth = Object.keys(monthCount).reduce((a, b) =>
-      monthCount[a] > monthCount[b] ? a : b,
-    );
+    const monthKeys = Object.keys(monthCount);
+    const bestMonth = monthKeys.length
+      ? monthKeys.reduce((a, b) => (monthCount[a] > monthCount[b] ? a : b))
+      : null;
     const monthNames = [
       "January",
       "February",
@@ -692,7 +709,7 @@ export const getStaffAnalytics = async (req, res) => {
       insights.push("high_value_sales");
     }
 
-    if (totalProfit / totalSales > 0.3) {
+    if (totalSales > 0 && totalProfit / totalSales > 0.3) {
       insights.push("profitable_seller");
     }
 
@@ -721,7 +738,7 @@ export const getStaffAnalytics = async (req, res) => {
           behavior: {
             total_sales: totalSales.toFixed(3),
             total_items: totalItems,
-            total_meters: totalMeters.toFixed(2),
+            total_meters: totalMeters.toFixed(3),
             total_profit: totalProfit.toFixed(3),
             avg_sale_value: avgSaleValue.toFixed(3),
             avg_days_between_sales: Math.round(avgDaysBetweenSales),
@@ -798,10 +815,16 @@ export const updateStaff = async (req, res) => {
     staff.username = username || staff.username;
     staff.role = role || staff.role;
     staff.branch_id = branch_id || staff.branch_id;
-    if (is_active !== undefined) staff.is_active = is_active;
+    if (is_active !== undefined) {
+      if (is_active === false && staff.is_active !== false) {
+        staff.token_version = (staff.token_version || 0) + 1;
+      }
+      staff.is_active = is_active;
+    }
 
     if (password) {
       staff.password = password;
+      staff.token_version = (staff.token_version || 0) + 1;
     }
 
     await staff.save();
@@ -854,6 +877,7 @@ export const deleteStaff = async (req, res) => {
     }
 
     staff.is_active = false;
+    staff.token_version = (staff.token_version || 0) + 1;
     await staff.save();
 
     res.json({

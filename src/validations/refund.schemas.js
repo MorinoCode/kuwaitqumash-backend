@@ -3,6 +3,7 @@ import { z } from "zod";
 const refundItemSchema = z.object({
   invoice_item_id: z.coerce.number().int().positive(),
   quantity_refunded: z.coerce.number().int().positive(),
+  meters_refunded: z.coerce.number().positive().optional(),
   amount_refunded: z.coerce.number().min(0),
 });
 

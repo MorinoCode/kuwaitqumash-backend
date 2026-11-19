@@ -12,7 +12,6 @@ export const initSocket = (httpServer) => {
   const corsOrigins = [
     'http://localhost:5173',
     'http://localhost:3000',
-    'https://kuwaitqumash-frontend.vercel.app',
     ...envOrigins,
   ];
 
@@ -32,16 +31,14 @@ export const initSocket = (httpServer) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.split(' ')[1];
 
     if (!token) {
-      socket.user = null;
-      return next();
+      return next(new Error('Authentication error: Token required'));
     }
 
     jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-      if (err) {
-        socket.user = null;
-      } else {
-        socket.user = decoded;
+      if (err || !decoded) {
+        return next(new Error('Authentication error: Invalid token'));
       }
+      socket.user = decoded;
       next();
     });
   });

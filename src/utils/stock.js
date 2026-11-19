@@ -64,21 +64,27 @@ export const applyRefundToStock = (
 ) => {
   const perRoll = Math.max(0, Number(length_m) || 0);
   const rolls = Math.max(0, parseInt(quantity, 10) || 0);
-  const restoredMeters = round3(toMeters(metersPerUnit) * toUnits(units));
+  const refundUnits = toUnits(units);
+  const refundMetersPerUnit = toMeters(metersPerUnit);
+  const restoredMeters = round3(refundMetersPerUnit * refundUnits);
 
   const totalMeters = round3(perRoll * rolls + restoredMeters);
   if (totalMeters <= 0) {
     return { quantity: 0, length_m: 0, restoredMeters: 0, totalMeters: 0 };
   }
 
-  const wholeRolls = perRoll > 0 ? Math.floor(restoredMeters / perRoll) : 0;
-  const newQuantity =
-    rolls > 0
-      ? Math.max(1, rolls + wholeRolls)
-      : Math.max(
-          1,
-          Math.ceil(totalMeters / Math.max(toMeters(metersPerUnit), totalMeters)),
-        );
+  let newQuantity;
+  if (rolls > 0) {
+    const wholeRolls = perRoll > 0 ? Math.floor(restoredMeters / perRoll) : 0;
+    newQuantity = Math.max(1, rolls + wholeRolls);
+  } else {
+    newQuantity = Math.max(
+      1,
+      refundUnits > 0
+        ? refundUnits
+        : (refundMetersPerUnit > 0 ? Math.ceil(totalMeters / refundMetersPerUnit) : 1),
+    );
+  }
 
   return {
     quantity: newQuantity,

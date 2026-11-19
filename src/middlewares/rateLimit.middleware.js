@@ -230,3 +230,35 @@ export const qrRateLimit = async (req, res, next) => {
 
   next();
 };
+
+export const adminLoginRateLimit = async (req, res, next) => {
+  const ip = req.ip || req.connection?.remoteAddress || "unknown";
+  const email = String(req.body?.email || "unknown").trim().toLowerCase();
+  const WINDOW_MS = 15 * 60 * 1000;
+
+  const ipCheck = await bumpCounter(
+    "admin_login",
+    `${ip}:${email}`,
+    5,
+    WINDOW_MS
+  );
+  if (ipCheck.limited) {
+    return res.status(429).json({
+      message: `Too many login attempts. Please try again in ${ipCheck.remainingMinutes} minute(s).`,
+    });
+  }
+
+  const accountCheck = await bumpCounter(
+    "admin_login_account",
+    email,
+    25,
+    WINDOW_MS
+  );
+  if (accountCheck.limited) {
+    return res.status(429).json({
+      message: `Too many login attempts. Please try again in ${accountCheck.remainingMinutes} minute(s).`,
+    });
+  }
+
+  next();
+};

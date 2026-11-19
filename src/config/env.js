@@ -41,15 +41,23 @@ for (const [key, defaultValue] of Object.entries(OPTIONAL_WITH_DEFAULTS)) {
   }
 }
 
-if (
-  process.env.CLOUDINARY_CLOUD_NAME &&
-  (!process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET)
-) {
+const r2Endpoint = process.env.R2_ENDPOINT || process.env.R2_ACCOUNT_ID;
+const r2Values = [
+  r2Endpoint,
+  process.env.R2_ACCESS_KEY_ID,
+  process.env.R2_SECRET_ACCESS_KEY,
+  process.env.R2_BUCKET_NAME,
+  process.env.R2_PUBLIC_URL,
+];
+const hasAnyR2 = r2Values.some(Boolean);
+const hasAllR2 = r2Values.every(Boolean);
+
+if (hasAnyR2 && !hasAllR2) {
   console.warn(
-    "[env] Warning: Cloudinary cloud name provided but API key/secret missing."
+    "[env] Warning: Cloudflare R2 storage partially configured (missing endpoint/account, key, bucket, or public URL)."
   );
 }
 
-if (!process.env.CLOUDINARY_CLOUD_NAME) {
-  console.warn("[env] Cloudinary is not configured: image uploads are disabled.");
+if (!hasAnyR2) {
+  console.warn("[env] Cloudflare R2 is not configured: image uploads are disabled.");
 }

@@ -396,13 +396,8 @@ async function seedDummyData() {
           min_stock_level: faker.number.int({ min: 5, max: 20 }),
           cost_per_meter: costPerMeter,
           price_per_meter: pricePerMeter,
-          supplier_name: faker.company.name(),
           status: 'In Stock',
           branch_id: faker.helpers.arrayElement(branches).id,
-          images: [
-            `https://example.com/inventory/item_${i}_1.jpg`,
-            `https://example.com/inventory/item_${i}_2.jpg`
-          ],
           description: faker.lorem.paragraph(),
           description_ar: faker.lorem.paragraph(),
           country_of_origin: faker.helpers.arrayElement(ORIGINS),

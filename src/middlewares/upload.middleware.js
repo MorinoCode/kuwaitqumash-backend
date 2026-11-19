@@ -78,14 +78,14 @@ export const validateImageContent = (req, res, next) => {
 
         const isValid = validateFileContent(file.path, file.mimetype);
         if (!isValid) {
-
-            try {
-                if (fs.existsSync(file.path)) {
-                    fs.unlinkSync(file.path);
+            for (const f of files) {
+                if (f && f.path && fs.existsSync(f.path)) {
+                    try {
+                        fs.unlinkSync(f.path);
+                    } catch (e) {
+                        void e;
+                    }
                 }
-            } catch (e) {
-                void e;
-
             }
             return res.status(400).json({
                 message: 'Invalid file content. File does not match its declared type.'

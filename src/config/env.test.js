@@ -48,20 +48,27 @@ test("exits when a required variable is missing and validation is on", async () 
   assert.match(child.stderr, /Missing required env vars/);
 });
 
-test("warns when Cloudinary is not configured", async () => {
+test("warns when Cloudflare R2 is not configured", async () => {
   const child = await runEnv({
     SKIP_ENV_VALIDATION: "true",
-    CLOUDINARY_CLOUD_NAME: "",
+    R2_ACCOUNT_ID: "",
+    R2_ENDPOINT: "",
+    R2_ACCESS_KEY_ID: "",
+    R2_SECRET_ACCESS_KEY: "",
+    R2_BUCKET_NAME: "",
+    R2_PUBLIC_URL: "",
   });
-  assert.match(child.stderr, /Cloudinary is not configured/);
+  assert.match(child.stderr, /Cloudflare R2 is not configured/);
 });
 
-test("warns about a half-configured Cloudinary", async () => {
+test("warns about a partially configured Cloudflare R2", async () => {
   const child = await runEnv({
     SKIP_ENV_VALIDATION: "true",
-    CLOUDINARY_CLOUD_NAME: "demo",
-    CLOUDINARY_API_KEY: "",
-    CLOUDINARY_API_SECRET: "",
+    R2_ACCOUNT_ID: "demo-account",
+    R2_ACCESS_KEY_ID: "",
+    R2_SECRET_ACCESS_KEY: "",
+    R2_BUCKET_NAME: "",
+    R2_PUBLIC_URL: "",
   });
-  assert.match(child.stderr, /API key\/secret missing/);
+  assert.match(child.stderr, /Cloudflare R2 storage partially configured/);
 });

@@ -1,8 +1,8 @@
 import InventoryItem from "./item.model.js";
 import InvoiceItem from "../sales/invoice-item.model.js";
+import Branch from "../store/branch.model.js";
 import { Op } from "sequelize";
 import sequelize from "../../config/database.js";
-import { saveImage, deleteImage } from "../../utils/fileUpload.js";
 import { generateUniqueBarcode } from "../../utils/barcode.js";
 import { normalizeToLatinDigits } from "../../utils/normalizeNumbers.js";
 import logger from "../../utils/logger.js";
@@ -12,7 +12,6 @@ import { shouldRearmAlert } from "../../utils/lowStock.js";
 export const addItem = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
-    const tenantId = req.tenant.id;
 
     logger.info("Adding inventory item", {
       component: "inventory",
@@ -27,14 +26,20 @@ export const addItem = async (req, res) => {
       fabric_type,
       item_name,
       item_name_ar,
+      composition,
       pattern,
-      country_of_origin,
-      description,
-      description_ar,
+      color,
+      width_cm,
+      unit,
       length_m,
+      roll_length_m,
       quantity,
       cost_per_meter,
       price_per_meter,
+      country_of_origin,
+      description,
+      description_ar,
+      barcode,
       branch_id,
       min_stock_level,
     } = req.body;
@@ -65,6 +70,58 @@ export const addItem = async (req, res) => {
         .json({ message: "Valid cost per meter is required." });
     }
 
+    // Sell price parsing (allows 0 without converting to null)
+    let parsedSellPrice = 0;
+    if (
+      price_per_meter !== undefined &&
+      price_per_meter !== null &&
+      String(price_per_meter).trim() !== ""
+    ) {
+      const parsed = parseFloat(
+        normalizeToLatinDigits(String(price_per_meter))
+      );
+      if (isNaN(parsed) || parsed < 0) {
+        return res
+          .status(400)
+          .json({ message: "Valid price per meter is required." });
+      }
+      parsedSellPrice = parsed;
+    }
+
+    // Role-based branch authorization
+    let assignedBranchId;
+    if (req.user.role === "store_owner") {
+      if (branch_id) {
+        assignedBranchId = parseInt(branch_id, 10);
+        const branchExists = await Branch.schema(schema).findByPk(assignedBranchId);
+        if (!branchExists) {
+          return res.status(400).json({ message: "Specified branch not found." });
+        }
+      } else if (req.user.branch_id) {
+        assignedBranchId = req.user.branch_id;
+      } else {
+        const primaryBranch = await Branch.schema(schema).findOne({
+          order: [["id", "ASC"]],
+        });
+        if (!primaryBranch) {
+          return res.status(400).json({ message: "No branch found for this store." });
+        }
+        assignedBranchId = primaryBranch.id;
+      }
+    } else {
+      if (!req.user.branch_id) {
+        return res.status(403).json({
+          message: "User is not assigned to any branch.",
+        });
+      }
+      if (branch_id && Number(branch_id) !== Number(req.user.branch_id)) {
+        return res.status(403).json({
+          message: "Access denied. Non-owner staff cannot add items for another branch.",
+        });
+      }
+      assignedBranchId = req.user.branch_id;
+    }
+
     let finalItemName = item_name;
     if (!finalItemName || finalItemName.trim().length === 0) {
       finalItemName = pattern || `${fabric_type} Item`;
@@ -81,27 +138,79 @@ export const addItem = async (req, res) => {
       ? description_ar.trim().substring(0, 5000)
       : null;
 
-    const barcode = await generateUniqueBarcode(
-      InventoryItem.schema(schema),
-      fabric_type,
-      pattern,
-      null
-    );
+    // Optional fields parsing
+    const parsedComposition =
+      composition && typeof composition === "string"
+        ? composition.trim().substring(0, 150)
+        : null;
 
-    const storageFolder = `${tenantId}_${fabric_type || "general"}`;
-    const imagePromises = (req.files || []).map((file) =>
-      saveImage(file, "inventory", storageFolder)
-    );
+    const validUnits = ["meter", "roll"];
+    const parsedUnit =
+      unit && typeof unit === "string" && validUnits.includes(unit.trim())
+        ? unit.trim()
+        : "meter";
 
-    const uploadedImages = await Promise.all(imagePromises);
+    let parsedWidth = null;
+    if (
+      width_cm !== undefined &&
+      width_cm !== null &&
+      String(width_cm).trim() !== ""
+    ) {
+      const parsed = parseFloat(normalizeToLatinDigits(String(width_cm)));
+      if (!isNaN(parsed) && parsed >= 0) {
+        parsedWidth = parsed;
+      }
+    }
+
+    let parsedRollLength = null;
+    if (
+      roll_length_m !== undefined &&
+      roll_length_m !== null &&
+      String(roll_length_m).trim() !== ""
+    ) {
+      const parsed = parseFloat(normalizeToLatinDigits(String(roll_length_m)));
+      if (!isNaN(parsed) && parsed >= 0) {
+        parsedRollLength = parsed;
+      }
+    }
+
+    // Barcode: check custom barcode uniqueness or generate unique barcode
+    let finalBarcode =
+      barcode && String(barcode).trim().length > 0
+        ? String(barcode).trim().substring(0, 100)
+        : null;
+
+    if (finalBarcode) {
+      const existing = await InventoryItem.schema(schema).findOne({
+        where: { barcode: finalBarcode },
+      });
+      if (existing) {
+        return res
+          .status(400)
+          .json({ message: "Barcode already exists. Please use a unique barcode." });
+      }
+    } else {
+      finalBarcode = await generateUniqueBarcode(
+        InventoryItem.schema(schema),
+        fabric_type,
+        pattern,
+        null
+      );
+    }
 
     const newItem = await InventoryItem.schema(schema).create({
       fabric_type,
-      color: req.body.color ? String(req.body.color).trim() : null,
+      color: color ? String(color).trim().substring(0, 100) : null,
       item_name: sanitizedItemName,
       item_name_ar: sanitizedItemNameAr,
-      pattern: pattern ? pattern.trim() : null,
-      country_of_origin: country_of_origin ? country_of_origin.trim() : null,
+      composition: parsedComposition,
+      pattern: pattern ? pattern.trim().substring(0, 100) : null,
+      country_of_origin: country_of_origin
+        ? country_of_origin.trim().substring(0, 100)
+        : null,
+      width_cm: parsedWidth,
+      unit: parsedUnit,
+      roll_length_m: parsedRollLength,
       description: sanitizedDescription,
       description_ar: sanitizedDescriptionAr,
       length_m: parsedLength,
@@ -111,19 +220,10 @@ export const addItem = async (req, res) => {
         parseInt(normalizeToLatinDigits(String(min_stock_level ?? "")), 10) ||
         2,
       cost_per_meter: parsedBuyPrice,
-      price_per_meter:
-        price_per_meter
-          ? (() => {
-              const parsed = parseFloat(
-                normalizeToLatinDigits(String(price_per_meter))
-              );
-              return isNaN(parsed) || parsed < 0 ? null : parsed;
-            })()
-          : null,
-      barcode,
-      branch_id: branch_id ? parseInt(branch_id, 10) : req.user.branch_id,
+      price_per_meter: parsedSellPrice,
+      barcode: finalBarcode,
+      branch_id: assignedBranchId,
       created_by: req.user.id,
-      images: uploadedImages,
       status: "In Stock",
     });
 
@@ -131,19 +231,44 @@ export const addItem = async (req, res) => {
       id: newItem.id,
       barcode: newItem.barcode,
       item_name: newItem.item_name,
+      item_name_ar: newItem.item_name_ar,
       pattern: newItem.pattern,
       fabric_type: newItem.fabric_type || "",
+      composition: newItem.composition,
       color: newItem.color || null,
-      length_m: newItem.length_m,
+      width_cm:
+        newItem.width_cm !== null && newItem.width_cm !== undefined
+          ? parseFloat(newItem.width_cm)
+          : null,
+      unit: newItem.unit,
+      length_m:
+        newItem.length_m !== null && newItem.length_m !== undefined
+          ? parseFloat(newItem.length_m)
+          : 0,
+      roll_length_m:
+        newItem.roll_length_m !== null && newItem.roll_length_m !== undefined
+          ? parseFloat(newItem.roll_length_m)
+          : null,
       quantity: newItem.quantity,
+      min_stock_level: newItem.min_stock_level,
+      cost_per_meter:
+        newItem.cost_per_meter !== null && newItem.cost_per_meter !== undefined
+          ? parseFloat(newItem.cost_per_meter)
+          : 0,
+      price_per_meter:
+        newItem.price_per_meter !== null && newItem.price_per_meter !== undefined
+          ? parseFloat(newItem.price_per_meter)
+          : 0,
+      country_of_origin: newItem.country_of_origin,
+      description: newItem.description,
+      description_ar: newItem.description_ar,
       status: newItem.status,
       branch_id: newItem.branch_id,
       createdAt: newItem.createdAt,
       updatedAt: newItem.updatedAt,
-
-      thumbnail:
-        newItem.images && newItem.images.length > 0 ? newItem.images[0] : null,
     };
+
+    await invalidateDashboardCache(req.tenant.slug);
 
     res.status(201).json({
       success: true,
@@ -253,97 +378,24 @@ export const getInventory = async (req, res) => {
     const limitNum = Math.min(parseInt(limit, 10) || 50, MAX_LIMIT);
     const offset = (pageNum - 1) * limitNum;
 
-    let totalCount;
-    const needsExactCount = search || pageNum > 1;
-
-    if (needsExactCount) {
-
-      totalCount = await InventoryItem.schema(schema).count({
-        where: whereClause,
-      });
-    } else {
-
-      const items = await InventoryItem.schema(schema).findAll({
+    const [totalCount, items] = await Promise.all([
+      InventoryItem.schema(schema).count({ where: whereClause }),
+      InventoryItem.schema(schema).findAll({
         where: whereClause,
         order: [["createdAt", "DESC"]],
-        limit: limitNum + 1,
-        offset: 0,
-      });
+        limit: limitNum,
+        offset: offset,
+      }),
+    ]);
 
-      const optimizedItems = items.map((item) => {
-        const itemData = item.toJSON();
+    const totalPages = Math.ceil(totalCount / limitNum) || 1;
 
-        if (
-          itemData.images &&
-          Array.isArray(itemData.images) &&
-          itemData.images.length > 0
-        ) {
-          itemData.thumbnail = itemData.images[0];
-        } else {
-          itemData.thumbnail = null;
-        }
-
-        delete itemData.images;
-        return itemData;
-      });
-
-      const hasMore = optimizedItems.length > limitNum;
-      const actualItems = optimizedItems.slice(0, limitNum);
-
-      if (hasMore) {
-
-        totalCount = limitNum * 2;
-      } else {
-        totalCount = actualItems.length;
-      }
-
-      const totalPages = hasMore ? 2 : 1;
-
-      return res.json({
-        success: true,
-        count: actualItems.length,
-        data: actualItems,
-        pagination: {
-          currentPage: pageNum,
-          totalPages: totalPages,
-          totalItems: totalCount,
-          itemsPerPage: limitNum,
-          hasNextPage: hasMore,
-          hasPrevPage: false,
-        },
-      });
-    }
-
-    const items = await InventoryItem.schema(schema).findAll({
-      where: whereClause,
-      order: [["createdAt", "DESC"]],
-      limit: limitNum,
-      offset: offset,
-    });
-
-    const optimizedItems = items.map((item) => {
-      const itemData = item.toJSON();
-
-      if (
-        itemData.images &&
-        Array.isArray(itemData.images) &&
-        itemData.images.length > 0
-      ) {
-        itemData.thumbnail = itemData.images[0];
-      } else {
-        itemData.thumbnail = null;
-      }
-
-      delete itemData.images;
-      return itemData;
-    });
-
-    const totalPages = Math.ceil(totalCount / limitNum);
+    const serializedItems = items.map((item) => item.toJSON());
 
     res.json({
       success: true,
-      count: optimizedItems.length,
-      data: optimizedItems,
+      count: serializedItems.length,
+      data: serializedItems,
       pagination: {
         currentPage: pageNum,
         totalPages: totalPages,
@@ -384,14 +436,14 @@ export const getItemById = async (req, res) => {
 
     res.json({ success: true, data: item });
   } catch (error) {
-    logger.error("Update Item Error", {
+    logger.error("Get Item Error", {
       component: "inventory",
       error: error?.message,
       stack: error?.stack,
     });
     res
       .status(500)
-      .json({ message: "Failed to update item. Please try again." });
+      .json({ message: "Failed to get item. Please try again." });
   }
 };
 
@@ -414,21 +466,20 @@ export const getItemByBarcode = async (req, res) => {
 
     res.json({ success: true, data: item });
   } catch (error) {
-    logger.error("Update Item Error", {
+    logger.error("Get Item By Barcode Error", {
       component: "inventory",
       error: error?.message,
       stack: error?.stack,
     });
     res
       .status(500)
-      .json({ message: "Failed to update item. Please try again." });
+      .json({ message: "Failed to get item by barcode. Please try again." });
   }
 };
 
 export const updateItem = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
-    const tenantId = req.tenant.id;
     const { id } = req.params;
 
     const item = await InventoryItem.schema(schema).findByPk(id);
@@ -450,6 +501,8 @@ export const updateItem = async (req, res) => {
       pattern,
       color,
       unit,
+      width_cm,
+      roll_length_m,
       country_of_origin,
       description,
       description_ar,
@@ -457,10 +510,10 @@ export const updateItem = async (req, res) => {
       quantity,
       cost_per_meter,
       price_per_meter,
-      supplier_name,
       barcode,
       min_stock_level,
       status,
+      branch_id,
     } = req.body;
 
     const updateData = {
@@ -470,7 +523,6 @@ export const updateItem = async (req, res) => {
       composition,
       pattern,
       color,
-      unit,
       country_of_origin,
       description,
       description_ar,
@@ -478,8 +530,6 @@ export const updateItem = async (req, res) => {
       quantity,
       cost_per_meter,
       price_per_meter,
-      supplier_name,
-      barcode,
       min_stock_level,
       status,
     };
@@ -496,21 +546,88 @@ export const updateItem = async (req, res) => {
       updateData.description_ar = updateData.description_ar
         .trim()
         .substring(0, 5000);
+    if (updateData.composition)
+      updateData.composition = updateData.composition.trim().substring(0, 150);
 
-    if (req.files && req.files.length > 0) {
-      const categoryForFolder =
-        updateData.fabric_type || item.fabric_type || "general";
-      const storageFolder = `${tenantId}_${categoryForFolder}`;
-
-      const imagePromises = req.files.map((file) =>
-        saveImage(file, "inventory", storageFolder)
-      );
-      const newImages = await Promise.all(imagePromises);
-
-      const currentImages = item.images || [];
-      const combinedImages = [...currentImages, ...newImages].slice(0, 5);
-      updateData.images = combinedImages;
+    if (unit !== undefined) {
+      const validUnits = ["meter", "roll"];
+      if (validUnits.includes(String(unit).trim())) {
+        updateData.unit = String(unit).trim();
+      }
     }
+
+    if (width_cm !== undefined) {
+      if (width_cm === null || String(width_cm).trim() === "") {
+        updateData.width_cm = null;
+      } else {
+        const parsed = parseFloat(normalizeToLatinDigits(String(width_cm)));
+        updateData.width_cm = isNaN(parsed) || parsed < 0 ? null : parsed;
+      }
+    }
+
+    if (roll_length_m !== undefined) {
+      if (roll_length_m === null || String(roll_length_m).trim() === "") {
+        updateData.roll_length_m = null;
+      } else {
+        const parsed = parseFloat(normalizeToLatinDigits(String(roll_length_m)));
+        updateData.roll_length_m = isNaN(parsed) || parsed < 0 ? null : parsed;
+      }
+    }
+
+    if (price_per_meter !== undefined && price_per_meter !== null) {
+      const parsed = parseFloat(normalizeToLatinDigits(String(price_per_meter)));
+      if (!isNaN(parsed) && parsed >= 0) {
+        updateData.price_per_meter = parsed;
+      }
+    }
+
+    if (cost_per_meter !== undefined && cost_per_meter !== null) {
+      const parsed = parseFloat(normalizeToLatinDigits(String(cost_per_meter)));
+      if (!isNaN(parsed) && parsed >= 0) {
+        updateData.cost_per_meter = parsed;
+      }
+    }
+
+    if (barcode !== undefined) {
+      const trimmedBarcode = barcode ? String(barcode).trim() : null;
+      if (trimmedBarcode && trimmedBarcode !== item.barcode) {
+        const existing = await InventoryItem.schema(schema).findOne({
+          where: { barcode: trimmedBarcode, id: { [Op.ne]: item.id } },
+        });
+        if (existing) {
+          return res.status(400).json({ message: "Barcode already exists. Please use a unique barcode." });
+        }
+      }
+      updateData.barcode = trimmedBarcode;
+    }
+
+    if (branch_id !== undefined && branch_id !== null) {
+      if (req.user.role !== "store_owner") {
+        if (Number(branch_id) !== Number(req.user.branch_id)) {
+          return res.status(403).json({ message: "Access denied. Non-owner staff cannot move items to another branch." });
+        }
+      } else {
+        const targetBranchId = parseInt(branch_id, 10);
+        const branchExists = await Branch.schema(schema).findByPk(targetBranchId);
+        if (!branchExists) {
+          return res.status(400).json({ message: "Specified target branch not found." });
+        }
+        updateData.branch_id = targetBranchId;
+      }
+    }
+
+    if (updateData.item_name)
+      updateData.item_name = updateData.item_name.trim().substring(0, 255);
+    if (updateData.item_name_ar)
+      updateData.item_name_ar = updateData.item_name_ar
+        .trim()
+        .substring(0, 255);
+    if (updateData.description)
+      updateData.description = updateData.description.trim().substring(0, 5000);
+    if (updateData.description_ar)
+      updateData.description_ar = updateData.description_ar
+        .trim()
+        .substring(0, 5000);
 
     const newQty =
       updateData.quantity !== undefined
@@ -545,6 +662,7 @@ export const updateItem = async (req, res) => {
     await item.update(updateData);
 
     await item.reload();
+    await invalidateDashboardCache(req.tenant.slug);
 
     res.json({
       success: true,
@@ -594,43 +712,6 @@ export const dismissItemAlert = async (req, res) => {
       stack: error?.stack,
     });
     res.status(500).json({ message: "Failed to dismiss alert. Please try again." });
-  }
-};
-
-export const deleteItemImage = async (req, res) => {
-  try {
-    const schema = req.tenant.db_schema;
-    const { id } = req.params;
-    const { imageUrl } = req.body;
-
-    const item = await InventoryItem.schema(schema).findByPk(id);
-    if (!item) return res.status(404).json({ message: "Item not found" });
-
-    if (
-      req.user.role !== "store_owner" &&
-      item.branch_id !== req.user.branch_id
-    ) {
-      return res.status(403).json({ message: "Access denied." });
-    }
-
-    const currentImages = item.images || [];
-    const updatedImages = currentImages.filter((img) => img !== imageUrl);
-
-    await deleteImage(imageUrl);
-
-    item.images = updatedImages;
-    await item.save();
-
-    res.json({ success: true, message: "Image deleted", data: item });
-  } catch (error) {
-    logger.error("Delete Item Image Error", {
-      component: "inventory",
-      error: error?.message,
-      stack: error?.stack,
-    });
-    res
-      .status(500)
-      .json({ message: "Failed to delete image. Please try again." });
   }
 };
 
@@ -707,22 +788,8 @@ export const deleteItem = async (req, res) => {
       });
     }
 
-    if (item.images && Array.isArray(item.images) && item.images.length > 0) {
-      for (const img of item.images) {
-        try {
-          await deleteImage(img);
-        } catch (imgError) {
-
-          logger.warn("Failed to delete image during item deletion", {
-            component: "inventory",
-            imageUrl: img,
-            error: imgError?.message,
-          });
-        }
-      }
-    }
-
     await item.destroy();
+    await invalidateDashboardCache(req.tenant.slug);
     res.json({ message: "Item deleted successfully" });
   } catch (error) {
     logger.error("Delete Item Error", {

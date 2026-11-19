@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import axios from "axios";
 import ExcelJS from "exceljs";
 import { jsPDF } from "jspdf";
@@ -7,6 +8,7 @@ import sharp from "sharp";
 import crypto from "crypto";
 import logger from "./logger.js";
 import { cacheGet, cacheSet } from "../config/redis.js";
+import { formatKuwaitDate, formatKuwaitTime } from "./kuwaitTime.js";
 
 const fontCache = new Map();
 
@@ -18,31 +20,9 @@ const safeNum = (v, def = 0) => {
 const safeStr = (v, def = "-") =>
   v != null && String(v).trim() !== "" ? String(v).trim() : def;
 
-const formatDate = (inv) => {
-  const raw = inv.created_at || inv.createdAt;
-  if (!raw) return "-";
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime())
-    ? "-"
-    : d.toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      });
-};
+const formatDate = (inv) => formatKuwaitDate(inv?.created_at || inv?.createdAt);
 
-const formatTime = (inv) => {
-  const raw = inv.created_at || inv.createdAt;
-  if (!raw) return "-";
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime())
-    ? "-"
-    : d.toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true,
-      });
-};
+const formatTime = (inv) => formatKuwaitTime(inv?.created_at || inv?.createdAt);
 
 async function getImageAsBase64(
   url,
@@ -144,8 +124,11 @@ async function getImageAsBase64(
 
 function loadInvoiceFonts(doc) {
   let hasCairo = false;
+  let hasCairoBold = false;
   let hasNoto = false;
+  let hasNotoBold = false;
   let hasAmiri = false;
+  let hasAmiriBold = false;
   try {
     const fonts = [
       { name: "Cairo-Regular.ttf", id: "Cairo", style: "normal" },
@@ -158,19 +141,35 @@ function loadInvoiceFonts(doc) {
     fonts.forEach((f) => {
       let base64 = fontCache.get(f.name);
       if (!base64) {
-        const fontPath = path.join(process.cwd(), "fonts", f.name);
-        if (fs.existsSync(fontPath)) {
-          const buf = fs.readFileSync(fontPath);
-          base64 = buf.toString("base64");
-          fontCache.set(f.name, base64);
+        const candidatePaths = [
+          path.join(process.cwd(), "fonts", f.name),
+          path.join(process.cwd(), "backend", "fonts", f.name),
+          path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fonts", f.name),
+        ];
+        for (const fontPath of candidatePaths) {
+          if (fs.existsSync(fontPath)) {
+            const buf = fs.readFileSync(fontPath);
+            base64 = buf.toString("base64");
+            fontCache.set(f.name, base64);
+            break;
+          }
         }
       }
       if (base64) {
         doc.addFileToVFS(f.name, base64);
         doc.addFont(f.name, f.id, f.style);
-        if (f.id === "Cairo") hasCairo = true;
-        if (f.id === "NotoSans") hasNoto = true;
-        if (f.id === "Amiri") hasAmiri = true;
+        if (f.id === "Cairo") {
+          hasCairo = true;
+          if (f.style === "bold") hasCairoBold = true;
+        }
+        if (f.id === "NotoSans") {
+          hasNoto = true;
+          if (f.style === "bold") hasNotoBold = true;
+        }
+        if (f.id === "Amiri") {
+          hasAmiri = true;
+          if (f.style === "bold") hasAmiriBold = true;
+        }
       }
     });
   } catch (e) {
@@ -179,7 +178,7 @@ function loadInvoiceFonts(doc) {
       error: e?.message,
     });
   }
-  return { hasCairo, hasNoto, hasAmiri };
+  return { hasCairo, hasCairoBold, hasNoto, hasNotoBold, hasAmiri, hasAmiriBold };
 }
 
 const L = {
@@ -277,9 +276,9 @@ export const generateInvoicePDF = async (
 
   const setArFont = (bold = false) => {
     if (fonts.hasAmiri) {
-      doc.setFont("Amiri", "normal");
+      doc.setFont("Amiri", bold && fonts.hasAmiriBold ? "bold" : "normal");
     } else if (fonts.hasCairo) {
-      doc.setFont("Cairo", "normal");
+      doc.setFont("Cairo", bold && fonts.hasCairoBold ? "bold" : "normal");
     } else {
       doc.setFont("helvetica", bold ? "bold" : "normal");
     }
@@ -287,23 +286,26 @@ export const generateInvoicePDF = async (
 
   const setEnFont = (bold = false) => {
     if (fonts.hasNoto) {
-      doc.setFont("NotoSans", bold ? "bold" : "normal");
+      doc.setFont("NotoSans", bold && fonts.hasNotoBold ? "bold" : "normal");
+    } else if (fonts.hasAmiri) {
+      doc.setFont("Amiri", bold && fonts.hasAmiriBold ? "bold" : "normal");
     } else {
       doc.setFont("helvetica", bold ? "bold" : "normal");
     }
   };
 
   const setMixedFont = (text, bold = false) => {
-    const hasArabic = /[\u0600-\u06FF\u0750-\u077F]/.test(String(text));
-    if (hasArabic) {
-      setArFont(bold);
+    if (fonts.hasAmiri) {
+      doc.setFont("Amiri", bold && fonts.hasAmiriBold ? "bold" : "normal");
+    } else if (fonts.hasCairo) {
+      doc.setFont("Cairo", bold && fonts.hasCairoBold ? "bold" : "normal");
     } else {
-      setEnFont(bold);
+      doc.setFont("helvetica", bold ? "bold" : "normal");
     }
   };
 
   const setArabicFont = () => setArFont(false);
-  const setFont = (bold = false) => setMixedFont("A", bold);
+  const setFont = (bold = false) => setArFont(bold);
 
   const checkPageBreak = (requiredHeight) => {
     if (y + requiredHeight > maxY) {
@@ -434,7 +436,7 @@ export const generateInvoicePDF = async (
   doc.rect(m, y, pageW - m * 2, headerHeight, "FD");
 
   const headerBrand =
-    String(branchName || storeSettings?.name || "KUWAIT QUMASH").toUpperCase();
+    String(storeSettings?.name || branchName || "").toUpperCase();
 
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
@@ -774,10 +776,10 @@ export const generateInvoicePDF = async (
       "-"
     );
     const quantity = Math.max(1, parseInt(item.quantity, 10) || 1);
-    const itemWeight = safeNum(item.meters, 0);
-    const itemLabor = safeNum(item.discount, 0);
+    const itemMeters = safeNum(item.meters, 0);
+    const itemDiscount = safeNum(item.discount, 0);
     const itemPrice = safeNum(item.total_price, 0);
-    const totalMetersForRow = itemWeight * quantity;
+    const totalMetersForRow = itemMeters * quantity;
     const pricePerMeter =
       item.price_per_meter != null && item.price_per_meter !== ""
         ? safeNum(item.price_per_meter, 0).toFixed(3)
@@ -804,10 +806,10 @@ export const generateInvoicePDF = async (
         align: "center",
         font: false,
       },
-      { text: (itemWeight || 0).toFixed(2), align: "right", font: false },
+      { text: (itemMeters || 0).toFixed(2), align: "right", font: false },
       { text: String(quantity), align: "center", font: false },
       { text: pricePerMeter, align: "right", font: false },
-      { text: itemLabor.toFixed(3), align: "right", font: false },
+      { text: itemDiscount.toFixed(3), align: "right", font: false },
       { text: (itemPrice || 0).toFixed(3), align: "right", font: true },
     ];
 
@@ -869,8 +871,8 @@ export const generateInvoicePDF = async (
   doc.text(`${label("totalMeters", true)}:`, m, y);
   doc.setTextColor(0, 0, 0);
   setFont(true);
-  const totalWeightText = `${safeNum(invoice.total_meters, 0).toFixed(2)} m`;
-  doc.text(totalWeightText, pageW - m - 2, y, { align: "right" });
+  const totalMetersText = `${safeNum(invoice.total_meters, 0).toFixed(2)} m`;
+  doc.text(totalMetersText, pageW - m - 2, y, { align: "right" });
   y += 4.5;
 
   setArabicFont();
@@ -1243,9 +1245,9 @@ export const generateCreditNotePDF = async (
 
   const setArFont = (bold = false) => {
     if (fonts.hasAmiri) {
-      doc.setFont("Amiri", "normal");
+      doc.setFont("Amiri", bold && fonts.hasAmiriBold ? "bold" : "normal");
     } else if (fonts.hasCairo) {
-      doc.setFont("Cairo", "normal");
+      doc.setFont("Cairo", bold && fonts.hasCairoBold ? "bold" : "normal");
     } else {
       doc.setFont("helvetica", bold ? "bold" : "normal");
     }
@@ -1253,23 +1255,26 @@ export const generateCreditNotePDF = async (
 
   const setEnFont = (bold = false) => {
     if (fonts.hasNoto) {
-      doc.setFont("NotoSans", bold ? "bold" : "normal");
+      doc.setFont("NotoSans", bold && fonts.hasNotoBold ? "bold" : "normal");
+    } else if (fonts.hasAmiri) {
+      doc.setFont("Amiri", bold && fonts.hasAmiriBold ? "bold" : "normal");
     } else {
       doc.setFont("helvetica", bold ? "bold" : "normal");
     }
   };
 
   const setMixedFont = (text, bold = false) => {
-    const hasArabic = /[\u0600-\u06FF\u0750-\u077F]/.test(String(text));
-    if (hasArabic) {
-      setArFont(bold);
+    if (fonts.hasAmiri) {
+      doc.setFont("Amiri", bold && fonts.hasAmiriBold ? "bold" : "normal");
+    } else if (fonts.hasCairo) {
+      doc.setFont("Cairo", bold && fonts.hasCairoBold ? "bold" : "normal");
     } else {
-      setEnFont(bold);
+      doc.setFont("helvetica", bold ? "bold" : "normal");
     }
   };
 
   const setArabicFont = () => setArFont(false);
-  const setFont = (bold = false) => setMixedFont("A", bold);
+  const setFont = (bold = false) => setArFont(bold);
 
   doc.setDrawColor(...brandDark);
   doc.rect(2, 2, pageW - 4, pageH - 4);
@@ -1314,27 +1319,43 @@ export const generateCreditNotePDF = async (
   doc.setFillColor(...brand);
   doc.rect(m, y, pageW - 2 * m, headerHeight, "F");
   doc.setTextColor(255, 255, 255);
-  doc.setFontSize(12);
+
+  const displayBrand = branchInfo?.storeName || branchName;
+  if (displayBrand && displayBrand !== "Branch") {
+    doc.setFontSize(9);
+    setArFont(true);
+    doc.text(displayBrand, m + 3, y + 7.5);
+  }
+
+  doc.setFontSize(11);
   setArFont(true);
-  doc.text(label("creditNote", true), pageW / 2, y + 6, {
+  doc.text(label("creditNote", true), pageW / 2, y + 7.5, {
     align: "center",
   });
-  doc.setFontSize(11);
+  doc.setFontSize(10);
   const cnNum = safeStr(
     refund.credit_note_number || refund.refund_number,
     "N/A"
   );
-  doc.text(`#${cnNum}`, pageW - m - 3, y + 6, { align: "right" });
+  doc.text(`#${cnNum}`, pageW - m - 3, y + 7.5, { align: "right" });
   doc.setTextColor(0, 0, 0);
   y += headerHeight + 4;
 
   setArFont(false);
-  doc.setFontSize(8.5);
-  doc.setTextColor(80, 80, 80);
-  const descText = label("creditNoteDesc", true);
-  const descLines = doc.splitTextToSize(descText, pageW - 2 * m);
-  doc.text(descLines, m, y);
-  y += descLines.length * 5 + 5;
+  doc.setFontSize(8);
+  doc.setTextColor(90, 90, 90);
+  doc.text(
+    "Refund document for the original invoice. Certifies items and amounts returned.",
+    m,
+    y
+  );
+  y += 4.5;
+  doc.text(
+    "وثيقة مرتجع للفاتورة الأصلية. يثبت الأصناف والمبالغ المرتجعة.",
+    m,
+    y
+  );
+  y += 6.5;
 
   doc.setTextColor(0, 0, 0);
   doc.setFontSize(10);
@@ -1398,7 +1419,7 @@ export const generateCreditNotePDF = async (
     const itemName = safeStr(invItem?.item_name, "-");
     const fabric_type = invItem?.fabric_type ? ` ${invItem.fabric_type}` : "";
     const meters = invItem?.meters
-      ? ` (${parseFloat(invItem.meters).toFixed(2)}g)`
+      ? ` (${parseFloat(invItem.meters).toFixed(2)} m)`
       : "";
     const desc = `${itemName}${fabric_type}${meters}`;
     const qty = ri.quantity_refunded || 0;
@@ -1419,34 +1440,31 @@ export const generateCreditNotePDF = async (
   doc.line(m, y, pageW - m, y);
   y += 6;
 
-  setFont(true);
-  doc.setFontSize(12);
+  setArFont(true);
+  doc.setFontSize(10.5);
+  doc.setTextColor(0, 0, 0);
+  doc.text(label("refundAmount", true), m, y);
   const total = parseFloat(refund.total_amount || 0).toFixed(3);
-  doc.text(
-    `${label("refundAmount", true)}: ${total} KWD`,
-    pageW - m - 3,
-    y,
-    { align: "right" }
-  );
+  doc.text(`${total} KWD`, pageW - m - 3, y, { align: "right" });
   y += 8;
 
   const payments = refund.payments || [];
   if (payments.length > 0) {
-    setFont(false);
-    doc.setFontSize(9);
-    doc.text(
-      `${label("paymentMethod", true)}: ${payments
-        .map((p) => `${p.method}: ${parseFloat(p.amount).toFixed(3)} KWD`)
-        .join(" | ")}`,
-      m,
-      y
-    );
+    setArFont(false);
+    doc.setFontSize(8.5);
+    doc.setTextColor(40, 40, 40);
+    const paymentLabel = label("paymentMethod", true);
+    const paymentValues = payments
+      .map((p) => `${p.method}: ${parseFloat(p.amount).toFixed(3)} KWD`)
+      .join(" | ");
+    doc.text(`${paymentLabel}: ${paymentValues}`, m, y);
     y += 6;
   }
 
   const creatorName = user?.full_name || "Staff";
-  setArabicFont();
-  doc.setFontSize(9);
+  setArFont(false);
+  doc.setFontSize(8.5);
+  doc.setTextColor(40, 40, 40);
   doc.text(`${label("salesman", true)}: ${creatorName}`, m, y);
   y += 12;
 

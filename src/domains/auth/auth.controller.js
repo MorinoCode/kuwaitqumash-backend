@@ -1,23 +1,36 @@
+import crypto from "node:crypto";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { Op } from "sequelize";
 import User from "./user.model.js";
 import Branch from "../store/branch.model.js";
+import Tenant from "../platform/tenant.model.js";
+import { cacheSet } from "../../config/redis.js";
 import logger from "../../utils/logger.js";
 
-const generateToken = (id, tenantSlug) => {
-  return jwt.sign({ id, tenant: tenantSlug }, process.env.JWT_SECRET, {
-    expiresIn: "24h",
-  });
+const generateToken = (user, tenantSlug) => {
+  return jwt.sign(
+    {
+      id: user.id,
+      tenant: tenantSlug,
+      tv: user.token_version ?? 0,
+      jti: crypto.randomUUID(),
+    },
+    process.env.JWT_SECRET,
+    {
+      algorithm: "HS256",
+      expiresIn: "24h",
+    },
+  );
 };
 
 export const login = async (req, res) => {
   try {
     let { username, password } = req.body;
-    username = username.toLowerCase();
+    username = String(username || "").trim();
     const schema = req.tenant.db_schema;
 
-    const user = await User.schema(schema).findOne({
+    let user = await User.schema(schema).findOne({
       where: { username: { [Op.iLike]: username } },
       include: [
         {
@@ -27,6 +40,19 @@ export const login = async (req, res) => {
         },
       ],
     });
+
+    if (!user) {
+      user = await User.schema(schema).findOne({
+        where: { full_name: { [Op.iLike]: username } },
+        include: [
+          {
+            model: Branch.schema(schema),
+            as: "branch",
+            attributes: ["id", "name", "is_main"],
+          },
+        ],
+      });
+    }
 
     if (!user) {
 
@@ -43,7 +69,7 @@ export const login = async (req, res) => {
       return res.status(403).json({ message: "Account is disabled." });
     }
 
-    const token = generateToken(user.id, req.tenant.slug);
+    const token = generateToken(user, req.tenant.slug);
 
     const isProduction = process.env.NODE_ENV === "production";
 
@@ -82,7 +108,56 @@ export const login = async (req, res) => {
   }
 };
 
-export const logout = (req, res) => {
+export const logout = async (req, res) => {
+  try {
+    let token = null;
+    if (req.cookies?.token) {
+      token = req.cookies.token;
+    } else if (
+      req.headers?.authorization &&
+      req.headers.authorization.startsWith("Bearer ")
+    ) {
+      token = req.headers.authorization.slice(7).trim();
+    }
+
+    if (token && process.env.JWT_SECRET) {
+      let decoded = null;
+      try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET, {
+          algorithms: ["HS256"],
+        });
+      } catch {
+        decoded = null;
+      }
+
+      if (decoded) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const ttl = Math.max(60, (decoded.exp || nowSec + 86400) - nowSec);
+        const tokenHash = crypto
+          .createHash("sha256")
+          .update(String(token))
+          .digest("hex");
+        await cacheSet(`revoked:jwt:${decoded.jti || tokenHash}`, true, ttl);
+
+        const tenantSlug = decoded.tenant || req.headers?.["x-tenant-id"];
+        if (tenantSlug && decoded.id) {
+          const tenant = await Tenant.findOne({ where: { slug: tenantSlug } });
+          if (tenant && /^[a-zA-Z0-9_]+$/.test(tenant.db_schema)) {
+            await User.schema(tenant.db_schema).increment("token_version", {
+              by: 1,
+              where: { id: decoded.id },
+            });
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.warn("Failed to revoke session during logout", {
+      component: "auth",
+      error: error?.message,
+    });
+  }
+
   const isProduction = process.env.NODE_ENV === "production";
 
   res.clearCookie("token", {

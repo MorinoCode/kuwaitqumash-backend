@@ -2,7 +2,8 @@
 FROM node:20-bookworm-slim
 
 # Install dumb-init for proper signal handling
-RUN apt-get update && apt-get install -y --no-install-recommends dumb-init && rm -rf /var/lib/apt/lists/*
+# Install runtime utilities: dumb-init for signals and postgresql-client for pg_dump R2 backups
+RUN apt-get update && apt-get install -y --no-install-recommends dumb-init postgresql-client && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
 WORKDIR /app
@@ -10,8 +11,7 @@ WORKDIR /app
 # Copy package files first (for better caching)
 COPY package*.json ./
 
-# Skip Chromium download for puppeteer (not used in main app; keeps image smaller)
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
+ENV NODE_ENV=production
 
 # Install dependencies (production only) - full image has prebuilt binaries for bcrypt/sharp
 RUN npm ci --omit=dev && npm cache clean --force

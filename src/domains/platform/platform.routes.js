@@ -13,8 +13,4 @@ router.post('/register', signupRateLimit, validate(registerBody), platformContro
 
 router.post('/contact', contactRateLimit, validate(contactMessageBody), platformController.submitContactMessage);
 
-router.get('/contact', resolveTenant, protect, restrictTo('store_owner'), platformController.listContactMessages);
-
-router.patch('/contact/:id/read', resolveTenant, protect, restrictTo('store_owner'), platformController.markContactMessageRead);
-
 export default router;

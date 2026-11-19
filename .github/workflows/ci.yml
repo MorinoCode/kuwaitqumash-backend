@@ -1,25 +1,37 @@
-# CI: فقط چک و تست روی branch dev و روی PR به main/dev
-# Deploy انجام نمی‌شود؛ فقط اطمینان از سالم بودن کد
-
-name: CI (Check & Test)
+name: Backend CI
 
 on:
-  push:
-    branches:
-      - dev
   pull_request:
-    branches:
-      - main
-      - dev
+    branches: [dev, main]
+  push:
+    branches: [dev]
 
 jobs:
-  check-and-test:
-    name: Check & Test
+  branch-policy:
+    name: Enforce Git Flow (only dev -> main)
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
-    timeout-minutes: 2
-
     steps:
-      - name: Checkout code
+      - name: Verify source branch is dev
+        run: |
+          if [ "${{ github.head_ref }}" != "dev" ]; then
+            echo "::error::Only the 'dev' branch can be merged into 'main' (attempted '${{ github.head_ref }}'). Please merge into 'dev' first."
+            exit 1
+          fi
+          echo "Verified PR source branch is 'dev'."
+
+  lint-and-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      JWT_SECRET: ci-test-jwt-secret
+      DB_NAME: ci_test_db
+      DB_USER: postgres
+      DB_PASS: ci_test_pass
+      REDIS_ENABLED: "false"
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -31,10 +43,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run unit & route tests
         run: npm run test:ci
-        env:
-          SKIP_ENV_VALIDATION: "true"
-          NODE_ENV: "test"
-          OPENAI_API_KEY: "sk-dummy-for-ci-no-real-calls"
-          REDIS_ENABLED: "false"

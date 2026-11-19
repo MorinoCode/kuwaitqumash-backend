@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const unitEnum = z.enum(['meter', 'roll', 'piece']);
+const unitEnum = z.enum(['meter', 'roll']);
 
 const addItemBase = {
   fabric_type: z.string().min(1, 'Fabric type is required.').max(100).trim(),
@@ -20,7 +20,6 @@ const addItemBase = {
   country_of_origin: z.string().max(100).trim().optional().nullable(),
   description: z.string().max(5000).trim().optional().nullable(),
   description_ar: z.string().max(5000).trim().optional().nullable(),
-  supplier_name: z.string().max(255).trim().optional().nullable(),
   barcode: z.string().max(100).trim().optional().nullable(),
   branch_id: z.coerce.number().int().positive().optional().nullable(),
 };
@@ -45,14 +44,9 @@ const updateItemBase = {
   country_of_origin: z.string().max(100).trim().optional().nullable(),
   description: z.string().max(5000).trim().optional().nullable(),
   description_ar: z.string().max(5000).trim().optional().nullable(),
-  supplier_name: z.string().max(255).trim().optional().nullable(),
   barcode: z.string().max(100).trim().optional().nullable(),
   status: z.enum(['In Stock', 'Sold', 'Reserved', 'Out of Stock']).optional(),
   branch_id: z.coerce.number().int().positive().optional().nullable(),
 };
 
 export const updateItemBody = z.object(updateItemBase).strict();
-
-export const deleteImageBody = z.object({
-  imageUrl: z.string().min(1, 'imageUrl is required.'),
-}).strict();

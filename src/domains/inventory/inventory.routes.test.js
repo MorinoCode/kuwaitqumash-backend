@@ -11,7 +11,6 @@ const routes = [
   ["get", "/:id"],
   ["get", "/:id/check-deletable"],
   ["put", "/:id"],
-  ["post", "/:id/delete-image"],
   ["post", "/:id/dismiss-alert"],
   ["delete", "/:id"],
 ];

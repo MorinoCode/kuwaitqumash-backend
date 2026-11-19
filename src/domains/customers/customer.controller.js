@@ -157,19 +157,42 @@ export const getCustomerById = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    const statsQuery = await Invoice.schema(schema).findOne({
-      where: { customer_id: id },
-      attributes: [
-        [sequelize.fn("COUNT", sequelize.col("id")), "invoice_count"],
-        [sequelize.fn("SUM", sequelize.col("total_amount")), "total_spent"],
-        [sequelize.fn("MAX", sequelize.col("created_at")), "last_purchase"],
-      ],
-      raw: true,
-    });
+    const [statsQuery, refundStats] = await Promise.all([
+      Invoice.schema(schema).findOne({
+        where: {
+          customer_id: id,
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          [sequelize.fn("COUNT", sequelize.col("id")), "invoice_count"],
+          [sequelize.fn("SUM", sequelize.col("total_amount")), "total_spent"],
+          [sequelize.fn("MAX", sequelize.col("created_at")), "last_purchase"],
+        ],
+        raw: true,
+      }),
+      sequelize.query(
+        `
+        SELECT COALESCE(SUM(r.total_amount), 0) AS refunded_total
+        FROM "${schema}".refunds r
+        INNER JOIN "${schema}".invoices inv ON r.invoice_id = inv.id
+        WHERE inv.customer_id = :customerId
+          AND inv.status = 'Partially Refunded'
+          AND r.status = 'Completed'
+        `,
+        {
+          replacements: { customerId: id },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+    ]);
+
+    const grossSpent = parseFloat(statsQuery?.total_spent || 0);
+    const refundedTotal = parseFloat(refundStats?.[0]?.refunded_total || 0);
+    const netSpent = Math.max(0, grossSpent - refundedTotal);
 
     const history = await Invoice.schema(schema).findAll({
       where: { customer_id: id },
-      include: ["items"],
+      include: [{ model: InvoiceItem.schema(schema), as: "items" }],
       order: [["createdAt", "DESC"]],
       limit: 10,
     });
@@ -180,7 +203,7 @@ export const getCustomerById = async (req, res) => {
         customer,
         history,
         stats: {
-          total_spent: parseFloat(statsQuery?.total_spent || 0).toFixed(3),
+          total_spent: netSpent.toFixed(3),
           invoice_count: parseInt(statsQuery?.invoice_count || 0),
           last_purchase: statsQuery?.last_purchase || null,
         },
@@ -216,7 +239,10 @@ export const getCustomerAnalytics = async (req, res) => {
     }
 
     const invoices = await Invoice.schema(schema).findAll({
-      where: { customer_id: id, status: "Paid" },
+      where: {
+        customer_id: id,
+        status: { [Op.in]: ["Paid", "Partially Refunded"] },
+      },
       include: [
         {
           model: InvoiceItem.schema(schema),
@@ -225,7 +251,7 @@ export const getCustomerAnalytics = async (req, res) => {
             {
               model: InventoryItem.schema(schema),
               as: "inventory_item",
-              attributes: ["fabric_type"],
+              attributes: ["fabric_type", "pattern"],
             },
           ],
         },
@@ -269,28 +295,26 @@ export const getCustomerAnalytics = async (req, res) => {
       const month = new Date(inv.createdAt).getMonth();
       monthCount[month] = (monthCount[month] || 0) + 1;
 
-      inv.items.forEach((item) => {
-        totalItems += parseInt(item.quantity || 1);
-        totalMeters +=
-          parseFloat(item.meters || 0) * (parseInt(item.quantity, 10) || 1);
+      (inv.items || []).forEach((item) => {
+        const qty = parseInt(item.quantity, 10) || 1;
+        const itemMeters = parseFloat(item.meters || 0);
+        totalItems += qty;
+        totalMeters += itemMeters * qty;
 
         const fabricType =
           item.fabric_type || item.inventory_item?.fabric_type || "Other";
         if (fabricType) {
-          fabricCount[fabricType] =
-            (fabricCount[fabricType] || 0) + parseInt(item.quantity || 1);
+          fabricCount[fabricType] = (fabricCount[fabricType] || 0) + qty;
         }
 
         const pattern = item.inventory_item?.pattern;
         if (pattern) {
-          patternCount[pattern] =
-            (patternCount[pattern] || 0) + parseInt(item.quantity || 1);
+          patternCount[pattern] = (patternCount[pattern] || 0) + qty;
         }
 
-        const buyPrice = parseFloat(item.buy_price_snapshot || 0);
+        const costPerMeter = parseFloat(item.cost_per_meter_snapshot || 0);
         const sellPrice = parseFloat(item.total_price || 0);
-        const itemMeters = parseFloat(item.meters || 0);
-        totalProfit += sellPrice - buyPrice * itemMeters;
+        totalProfit += sellPrice - costPerMeter * itemMeters * qty;
       });
     });
 
@@ -413,7 +437,7 @@ export const getCustomerAnalytics = async (req, res) => {
           behavior: {
             total_spent: totalSpent.toFixed(3),
             total_items: totalItems,
-            total_meters: totalMeters.toFixed(2),
+            total_meters: totalMeters.toFixed(3),
             total_profit: totalProfit.toFixed(3),
             avg_purchase_value: avgPurchaseValue.toFixed(3),
             avg_days_between_purchases: Math.round(avgDaysBetweenPurchases),
@@ -538,7 +562,7 @@ export const getCustomerHistory = async (req, res) => {
       schema,
     ).findAndCountAll({
       where: { customer_id: id },
-      include: ["items"],
+      include: [{ model: InvoiceItem.schema(schema), as: "items" }],
       order: [["createdAt", "DESC"]],
       limit: limitNum,
       offset: offset,

@@ -181,6 +181,10 @@ export const ensureTenantMigrations = async (schema) => {
       `ALTER TABLE "${schema}".inventory_items
        ADD COLUMN IF NOT EXISTS alert_dismissed_at TIMESTAMP WITH TIME ZONE`
     );
+    await sequelize.query(
+      `ALTER TABLE "${schema}".users
+       ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0`
+    );
   } catch (error) {
     logger.warn("Tenant migration failed", {
       component: "schema.manager",

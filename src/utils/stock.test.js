@@ -49,3 +49,10 @@ test("applyRefundToStock uses at least one roll for an empty item", () => {
   assert.equal(result.quantity, 1);
   assert.equal(result.length_m, 3);
 });
+
+test("applyRefundToStock restores multiple whole rolls when stock was empty", () => {
+  const result = applyRefundToStock({ length_m: 0, quantity: 0 }, 25, 3);
+  assert.equal(result.quantity, 3);
+  assert.equal(result.length_m, 25);
+  assert.equal(result.totalMeters, 75);
+});

@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {
   addItemBody,
   updateItemBody,
-  deleteImageBody,
 } from "./inventory.schemas.js";
 
 const valid = { fabric_type: "Cotton", price_per_meter: 2.5 };
@@ -60,9 +59,4 @@ test("updateItemBody allows a partial patch", () => {
 test("updateItemBody validates the status enum", () => {
   assert.equal(updateItemBody.safeParse({ status: "Reserved" }).success, true);
   assert.equal(updateItemBody.safeParse({ status: "Lost" }).success, false);
-});
-
-test("deleteImageBody requires imageUrl", () => {
-  assert.equal(deleteImageBody.safeParse({}).success, false);
-  assert.equal(deleteImageBody.safeParse({ imageUrl: "a.jpg" }).success, true);
 });

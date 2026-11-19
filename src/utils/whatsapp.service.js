@@ -13,14 +13,16 @@ import WhatsappConfig from "../domains/platform/whatsapp.config.model.js";
 import { formatPhoneForWhatsApp } from "./phone.utils.js";
 import logger from "./logger.js";
 import {
-  createGCSAuthState,
-  deleteSessionDir as deleteGCSSessionDir,
-} from "./whatsapp-gcs-adapter.js";
-import {
   cacheSet,
   cacheDelete,
   getRedisClient,
 } from "../config/redis.js";
+import {
+  clearWhatsAppStatusCache,
+  getSessionStatusFromStore,
+  markWhatsAppPairedNow,
+  publishWhatsAppStatusCache,
+} from "./whatsapp-status.js";
 
 const REDIS_SESSION_PREFIX = "whatsapp:session:";
 const REDIS_SESSIONS_SET = "whatsapp:sessions:active";
@@ -61,6 +63,13 @@ const deleteSessionFromRedis = async (sessionKey) => {
 };
 
 const sessions = new Map();
+
+const getSessionsBaseDir = () =>
+  process.env.WA_AUTH_DIR ||
+  process.env.WHATSAPP_SESSIONS_DIR ||
+  path.join(process.cwd(), "whatsapp_sessions");
+
+const getSessionDir = (sessionKey) => path.join(getSessionsBaseDir(), sessionKey);
 
 const getSessionKey = (tenantSlug, branchId = null) => {
   return branchId ? `${tenantSlug}_branch_${branchId}` : tenantSlug;
@@ -153,20 +162,38 @@ export const cleanupDisconnectedSessions = async () => {
   }
 };
 
-if (typeof setInterval !== "undefined" && process.env.NODE_ENV !== "test") {
-  setInterval(() => {
-    cleanupDisconnectedSessions().catch((err) => {
-      logger.error("Periodic WhatsApp cleanup failed", {
-        component: "whatsapp",
-        error: err?.message,
-      });
+export const refreshActiveSessionStatuses = async () => {
+  for (const [sessionKey, sock] of sessions.entries()) {
+    if (!sock?.user) continue;
+    const branchMatch = /^(.*)_branch_(\d+)$/.exec(sessionKey);
+    const tenantSlug = branchMatch ? branchMatch[1] : sessionKey;
+    const branchId = branchMatch ? Number.parseInt(branchMatch[2], 10) : null;
+    const uid = sock.user?.id;
+    const phone = typeof uid === "string" ? uid.split(":")[0] : null;
+    await publishWhatsAppStatusCache(tenantSlug, branchId, {
+      status: "CONNECTED",
+      is_ready: true,
+      phone_connected: phone,
     });
-  }, 5 * 60 * 1000);
-}
+  }
+};
+
+export const closeAllWhatsAppSockets = async () => {
+  for (const [sessionKey, sock] of sessions.entries()) {
+    try {
+      sock?.end?.(new Error("Worker shutdown"));
+    } catch {
+      // Ignore socket close errors on shutdown
+    }
+    sessions.delete(sessionKey);
+  }
+};
 
 export const getSessionStatus = async (tenantSlug, branchId = null) => {
   try {
-    const sessionKey = getSessionKey(tenantSlug, branchId);
+    const normBranchId =
+      branchId !== null && branchId !== undefined ? Number(branchId) : null;
+    const sessionKey = getSessionKey(tenantSlug, normBranchId);
     const session = sessions.get(sessionKey);
     const uid = session?.user?.id;
     const phone = typeof uid === "string" ? uid.split(":")[0] : null;
@@ -175,21 +202,27 @@ export const getSessionStatus = async (tenantSlug, branchId = null) => {
         status: "CONNECTED",
         is_ready: true,
         phone_connected: phone || null,
+        is_central_fallback: false,
       };
     }
-    const where = { tenant_slug: tenantSlug };
-    if (branchId !== null && branchId !== undefined) {
-      where.branch_id = branchId;
-    } else {
-      where.branch_id = { [Op.is]: null };
+
+    if (normBranchId !== null) {
+      const centralKey = getSessionKey(tenantSlug, null);
+      const centralSession = sessions.get(centralKey);
+      const centralUid = centralSession?.user?.id;
+      const centralPhone =
+        typeof centralUid === "string" ? centralUid.split(":")[0] : null;
+      if (centralSession?.user) {
+        return {
+          status: "CONNECTED",
+          is_ready: true,
+          phone_connected: centralPhone || null,
+          is_central_fallback: true,
+        };
+      }
     }
-    const config = await WhatsappConfig.findOne({ where });
-    if (!config) return { status: "NOT_CONFIGURED" };
-    return {
-      status: config.session_status,
-      is_ready: false,
-      phone_connected: null,
-    };
+
+    return await getSessionStatusFromStore(tenantSlug, normBranchId);
   } catch (e) {
     logger.warn("getSessionStatus error", {
       component: "whatsapp",
@@ -197,7 +230,12 @@ export const getSessionStatus = async (tenantSlug, branchId = null) => {
       branchId,
       error: e?.message,
     });
-    return { status: "NOT_CONFIGURED" };
+    return {
+      status: "NOT_CONFIGURED",
+      is_ready: false,
+      phone_connected: null,
+      is_central_fallback: false,
+    };
   }
 };
 
@@ -215,13 +253,17 @@ const ensureWhatsappConfig = async (tenantSlug, branchId = null) => {
     let config = await WhatsappConfig.findOne({ where });
 
     if (!config) {
-
-      config = await WhatsappConfig.create({
-        tenant_slug: tenantSlug,
-        branch_id: branchId || null,
-        session_status: "DISCONNECTED",
-        is_enabled: false,
-      });
+      try {
+        config = await WhatsappConfig.create({
+          tenant_slug: tenantSlug,
+          branch_id: branchId || null,
+          session_status: "DISCONNECTED",
+          is_enabled: false,
+        });
+      } catch (createErr) {
+        config = await WhatsappConfig.findOne({ where });
+        if (!config) throw createErr;
+      }
     }
 
     return config;
@@ -284,7 +326,12 @@ export const connectToWhatsApp = async (
   socketCallback,
   options = {}
 ) => {
-  const { isRestart = false, restartRetry = 0, branchId = null } = options;
+  const {
+    isRestart = false,
+    restartRetry = 0,
+    branchId = null,
+    wasQrPaired = false,
+  } = options;
   const sessionKey = getSessionKey(tenantSlug, branchId);
   const log = (msg, ctx = {}) =>
     logger.info(msg, { component: "whatsapp", tenantSlug, branchId, ...ctx });
@@ -305,36 +352,17 @@ export const connectToWhatsApp = async (
       await deleteSessionFromRedis(sessionKey);
     }
 
-    const sessionDir = path.join(
-      process.env.WHATSAPP_SESSIONS_DIR || path.join(process.cwd(), "whatsapp_sessions"),
-      sessionKey
-    );
+    const sessionDir = getSessionDir(sessionKey);
     await ensureWhatsappConfig(tenantSlug, branchId);
 
-    const useGCS =
-      process.env.USE_GCS_FOR_WHATSAPP === "true" ||
-      process.env.NODE_ENV === "production";
-
-    let state, saveCreds;
-
-    if (useGCS) {
-
-      log("Using GCS for WhatsApp sessions", { sessionKey });
-      const authState = await createGCSAuthState(sessionKey);
-      state = authState.state;
-      saveCreds = authState.saveCreds;
-    } else {
-
-      if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
-        log("session dir created", { sessionDir });
-      }
-      const authState = await useMultiFileAuthState(sessionDir);
-      state = authState.state;
-      saveCreds = authState.saveCreds;
+    if (!fs.existsSync(sessionDir)) {
+      fs.mkdirSync(sessionDir, { recursive: true });
+      log("session dir created", { sessionDir });
     }
+    const authState = await useMultiFileAuthState(sessionDir);
+    const { state, saveCreds } = authState;
 
-    log("auth state loaded", { useGCS });
+    log("auth state loaded", { sessionDir });
 
     const versionPromise = fetchLatestBaileysVersion();
     let timeoutId;
@@ -390,12 +418,14 @@ export const connectToWhatsApp = async (
     });
 
     let hasConnected = false;
+    let sawQrInAttempt = false;
 
     sock.ev.on("connection.update", async (update) => {
       try {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
+          sawQrInAttempt = true;
           log("QR received, generating data URL");
           try {
             const qrCodeDataUrl = await QRCode.toDataURL(qr);
@@ -423,6 +453,7 @@ export const connectToWhatsApp = async (
           });
 
           await safeUpdateConfig(tenantSlug, "DISCONNECTED", {}, branchId);
+          await clearWhatsAppStatusCache(tenantSlug, branchId);
 
           const isRestartRequired =
             statusCode === DisconnectReason.restartRequired;
@@ -444,6 +475,7 @@ export const connectToWhatsApp = async (
                 isRestart: true,
                 restartRetry: 0,
                 branchId,
+                wasQrPaired: sawQrInAttempt || wasQrPaired,
               }).catch((err) => {
                 logErr("restart after QR failed", {
                   error: err?.message,
@@ -460,15 +492,8 @@ export const connectToWhatsApp = async (
 
           if (isLoggedOut || isReplaced) {
             try {
-              const useGCS =
-                process.env.USE_GCS_FOR_WHATSAPP === "true" ||
-                process.env.NODE_ENV === "production";
-              if (useGCS) {
-                await deleteGCSSessionDir(sessionKey);
-              } else {
-                if (fs.existsSync(sessionDir))
-                  fs.rmSync(sessionDir, { recursive: true, force: true });
-              }
+              if (fs.existsSync(sessionDir))
+                fs.rmSync(sessionDir, { recursive: true, force: true });
             } catch (cleanupError) {
               logErr("Session cleanup failed", {
                 error: cleanupError?.message,
@@ -556,13 +581,23 @@ export const connectToWhatsApp = async (
 
         if (connection === "open") {
           hasConnected = true;
-          log("connection open", { user: sock.user?.id });
+          const uid = sock.user?.id;
+          const phoneConnected = typeof uid === "string" ? uid.split(":")[0] : null;
+          log("connection open", { user: uid });
           await safeUpdateConfig(
             tenantSlug,
             "CONNECTED",
             { last_active: new Date() },
             branchId
           );
+          if (sawQrInAttempt || wasQrPaired) {
+            await markWhatsAppPairedNow(tenantSlug, branchId);
+          }
+          await publishWhatsAppStatusCache(tenantSlug, branchId, {
+            status: "CONNECTED",
+            is_ready: true,
+            phone_connected: phoneConnected,
+          });
           safeCallback(socketCallback, { type: "connected", user: sock.user });
         } else if (connection) {
           log("connection.update other", { connection });
@@ -596,6 +631,91 @@ export const connectToWhatsApp = async (
   }
 };
 
+export const resolveConfigAndSocket = async (tenantSlug, branchId = null) => {
+  const normBranchId =
+    branchId !== null && branchId !== undefined ? Number(branchId) : null;
+
+  // 1. If branchId was requested, check branch-specific session first
+  if (normBranchId !== null) {
+    const branchKey = getSessionKey(tenantSlug, normBranchId);
+    let branchSock = sessions.get(branchKey);
+    const branchConfig = await WhatsappConfig.findOne({
+      where: { tenant_slug: tenantSlug, branch_id: normBranchId },
+    });
+
+    if (branchConfig && branchConfig.session_status === "CONNECTED") {
+      if (!branchSock || !branchSock.user) {
+        logger.info("Branch socket not in memory, attempting reconnect", {
+          component: "whatsapp",
+          tenantSlug,
+          branchId: normBranchId,
+          branchKey,
+        });
+        try {
+          await connectToWhatsApp(tenantSlug, null, { branchId: normBranchId });
+          await new Promise((r) => setTimeout(r, 2000));
+          branchSock = sessions.get(branchKey);
+        } catch (reconnErr) {
+          logger.warn("Branch WhatsApp socket reconnect attempt failed", {
+            component: "whatsapp",
+            tenantSlug,
+            branchId: normBranchId,
+            error: reconnErr?.message,
+          });
+        }
+      }
+      if (branchSock && branchSock.user) {
+        return {
+          sock: branchSock,
+          config: branchConfig,
+          sessionKey: branchKey,
+          branchId: normBranchId,
+          isFallback: false,
+        };
+      }
+    }
+  }
+
+  // 2. Fallback to store-level central session (branch_id: null)
+  const centralKey = getSessionKey(tenantSlug, null);
+  let centralSock = sessions.get(centralKey);
+  const centralConfig = await WhatsappConfig.findOne({
+    where: { tenant_slug: tenantSlug, branch_id: { [Op.is]: null } },
+  });
+
+  if (centralConfig && centralConfig.session_status === "CONNECTED") {
+    if (!centralSock || !centralSock.user) {
+      logger.info("Central socket not in memory, attempting reconnect", {
+        component: "whatsapp",
+        tenantSlug,
+        centralKey,
+      });
+      try {
+        await connectToWhatsApp(tenantSlug, null, { branchId: null });
+        await new Promise((r) => setTimeout(r, 2000));
+        centralSock = sessions.get(centralKey);
+      } catch (reconnErr) {
+        logger.warn("Central WhatsApp socket reconnect attempt failed", {
+          component: "whatsapp",
+          tenantSlug,
+          error: reconnErr?.message,
+        });
+      }
+    }
+    if (centralSock && centralSock.user) {
+      return {
+        sock: centralSock,
+        config: centralConfig,
+        sessionKey: centralKey,
+        branchId: null,
+        isFallback: normBranchId !== null,
+      };
+    }
+  }
+
+  return null;
+};
+
 export const sendInvoicePDF = async (
   tenantSlug,
   targetPhone,
@@ -604,52 +724,17 @@ export const sendInvoicePDF = async (
   branchId = null
 ) => {
   try {
-    const sessionKey = getSessionKey(tenantSlug, branchId);
-    let sock = sessions.get(sessionKey);
-
-    const where = { tenant_slug: tenantSlug };
-    if (branchId !== null && branchId !== undefined) {
-      where.branch_id = branchId;
-    } else {
-      where.branch_id = { [Op.is]: null };
-    }
-    const config = await WhatsappConfig.findOne({ where });
-    if (!config || config.session_status !== "CONNECTED") {
-      logger.info("WhatsApp not connected", {
+    const resolved = await resolveConfigAndSocket(tenantSlug, branchId);
+    if (!resolved) {
+      logger.info("WhatsApp not connected for PDF send", {
         component: "whatsapp",
         tenantSlug,
         branchId,
-        configStatus: config?.session_status,
       });
       return false;
     }
 
-    if (!sock) {
-      logger.info("Socket not found, attempting reconnect", {
-        component: "whatsapp",
-        tenantSlug,
-        branchId,
-        sessionKey,
-      });
-      sock = await connectToWhatsApp(tenantSlug, null, { branchId });
-
-      await new Promise((r) => setTimeout(r, 3000));
-
-      sock = sessions.get(sessionKey);
-    }
-
-    if (!sock || !sock.user) {
-      logger.warn("Socket not ready after reconnect attempt", {
-        component: "whatsapp",
-        tenantSlug,
-        branchId,
-        sessionKey,
-        hasSocket: !!sock,
-        hasUser: !!sock?.user,
-      });
-      return false;
-    }
-
+    const { sock, sessionKey, isFallback } = resolved;
     const formattedPhone = formatPhoneForWhatsApp(targetPhone);
     if (!formattedPhone) {
       logger.warn("Invalid phone format for PDF send", {
@@ -669,6 +754,8 @@ export const sendInvoicePDF = async (
         component: "whatsapp",
         tenantSlug,
         branchId,
+        sessionKey,
+        isFallback,
         targetPhone: formattedPhone.replace(/@.*/, "@***"),
         fileName,
         fileSize: pdfBuffer.length,
@@ -685,6 +772,7 @@ export const sendInvoicePDF = async (
         component: "whatsapp",
         tenantSlug,
         branchId,
+        sessionKey,
         targetPhone: formattedPhone.replace(/@.*/, "@***"),
       });
 
@@ -708,15 +796,25 @@ export const sendInvoicePDF = async (
   }
 };
 
-const getSocket = (tenantSlug, branchId = null) => {
-  const sessionKey = getSessionKey(tenantSlug, branchId);
-  const sock = sessions.get(sessionKey);
+export const getSocket = (tenantSlug, branchId = null) => {
+  const normBranchId =
+    branchId !== null && branchId !== undefined ? Number(branchId) : null;
+  const sessionKey = getSessionKey(tenantSlug, normBranchId);
+  let sock = sessions.get(sessionKey);
+
+  if ((!sock || !sock.user) && normBranchId !== null) {
+    const centralKey = getSessionKey(tenantSlug, null);
+    const centralSock = sessions.get(centralKey);
+    if (centralSock && centralSock.user) {
+      return centralSock;
+    }
+  }
 
   if (!sock) {
     logger.warn("Socket not found in sessions", {
       component: "whatsapp",
       tenantSlug,
-      branchId,
+      branchId: normBranchId,
       sessionKey,
       availableSessions: Array.from(sessions.keys()),
     });
@@ -727,7 +825,7 @@ const getSocket = (tenantSlug, branchId = null) => {
     logger.warn("Socket exists but user not authenticated", {
       component: "whatsapp",
       tenantSlug,
-      branchId,
+      branchId: normBranchId,
       sessionKey,
       socketExists: true,
       hasUser: false,
@@ -738,7 +836,7 @@ const getSocket = (tenantSlug, branchId = null) => {
   logger.info("Socket found and ready", {
     component: "whatsapp",
     tenantSlug,
-    branchId,
+    branchId: normBranchId,
     sessionKey,
     userId: sock.user?.id,
   });
@@ -757,54 +855,17 @@ export const sendWhatsAppText = async (
   branchId = null
 ) => {
   try {
-    const sessionKey = getSessionKey(tenantSlug, branchId);
-    let sock = sessions.get(sessionKey);
-
-    const where = { tenant_slug: tenantSlug };
-    if (branchId !== null && branchId !== undefined) {
-      where.branch_id = branchId;
-    } else {
-      where.branch_id = { [Op.is]: null };
-    }
-    const config = await WhatsappConfig.findOne({ where });
-    if (!config || config.session_status !== "CONNECTED") {
+    const resolved = await resolveConfigAndSocket(tenantSlug, branchId);
+    if (!resolved) {
       logger.info("WhatsApp not connected for text send", {
         component: "whatsapp",
         tenantSlug,
         branchId,
-        configStatus: config?.session_status,
       });
       return false;
     }
 
-    if (!sock) {
-      logger.info("Socket not found for text send, attempting reconnect", {
-        component: "whatsapp",
-        tenantSlug,
-        branchId,
-        sessionKey,
-      });
-      sock = await connectToWhatsApp(tenantSlug, null, { branchId });
-
-      await new Promise((r) => setTimeout(r, 3000));
-
-      sock = sessions.get(sessionKey);
-    }
-
-    if (!sock || !sock.user) {
-      logger.warn("WhatsApp not connected for send after reconnect attempt", {
-        component: "whatsapp",
-        tenantSlug,
-        branchId,
-        sessionKey,
-        targetPhone:
-          targetPhone.substring(0, 4) +
-          "****" +
-          targetPhone.substring(targetPhone.length - 2),
-      });
-      return false;
-    }
-
+    const { sock, sessionKey, isFallback } = resolved;
     const jid = formatPhoneJid(targetPhone);
     if (!jid) {
       logger.warn("Invalid phone format for WhatsApp send", {
@@ -823,6 +884,8 @@ export const sendWhatsAppText = async (
       component: "whatsapp",
       tenantSlug,
       branchId,
+      sessionKey,
+      isFallback,
       jid: jid.replace(/@.*/, "@***"),
       messageLength: text?.length || 0,
     });
@@ -833,6 +896,7 @@ export const sendWhatsAppText = async (
       component: "whatsapp",
       tenantSlug,
       branchId,
+      sessionKey,
       jid: jid.replace(/@.*/, "@***"),
     });
 
@@ -862,51 +926,17 @@ export const sendWhatsAppDocument = async (
   branchId = null
 ) => {
   try {
-    const sessionKey = getSessionKey(tenantSlug, branchId);
-    let sock = sessions.get(sessionKey);
-
-    const where = { tenant_slug: tenantSlug };
-    if (branchId !== null && branchId !== undefined) {
-      where.branch_id = branchId;
-    } else {
-      where.branch_id = { [Op.is]: null };
-    }
-    const config = await WhatsappConfig.findOne({ where });
-    if (!config || config.session_status !== "CONNECTED") {
-      logger.info("WhatsApp not connected", {
+    const resolved = await resolveConfigAndSocket(tenantSlug, branchId);
+    if (!resolved) {
+      logger.info("WhatsApp not connected for document send", {
         component: "whatsapp",
         tenantSlug,
         branchId,
-        configStatus: config?.session_status,
       });
       return false;
     }
 
-    if (!sock) {
-      logger.info("Socket not found for document send, attempting reconnect", {
-        component: "whatsapp",
-        tenantSlug,
-        branchId,
-        sessionKey,
-      });
-      sock = await connectToWhatsApp(tenantSlug, null, { branchId });
-
-      await new Promise((r) => setTimeout(r, 3000));
-
-      sock = sessions.get(sessionKey);
-    }
-
-    if (!sock || !sock.user) {
-      logger.warn("WhatsApp not connected for send after reconnect attempt", {
-        component: "whatsapp",
-        tenantSlug,
-        branchId,
-        sessionKey,
-        hasSocket: !!sock,
-        hasUser: !!sock?.user,
-      });
-      return false;
-    }
+    const { sock, sessionKey, isFallback } = resolved;
     const jid = formatPhoneJid(targetPhone);
     if (!jid) {
       logger.warn("Invalid phone format for WhatsApp document send", {
@@ -933,6 +963,8 @@ export const sendWhatsAppDocument = async (
       component: "whatsapp",
       tenantSlug,
       branchId,
+      sessionKey,
+      isFallback,
       targetPhone: jid.replace(/@.*/, "@***"),
       fileName,
       bufferSize: buffer.length,
@@ -949,6 +981,7 @@ export const sendWhatsAppDocument = async (
       component: "whatsapp",
       tenantSlug,
       branchId,
+      sessionKey,
       targetPhone: jid.replace(/@.*/, "@***"),
     });
 
@@ -972,32 +1005,23 @@ export const logoutWhatsApp = async (tenantSlug, branchId = null) => {
     if (sock) {
       try {
         await sock.logout();
-      } catch (e) {
+      } catch {
         try {
           await sock.end(new Error("Manual logout"));
-        } catch (err) {
-          void err;
+        } catch {
+          // ignore
         }
       }
       sessions.delete(sessionKey);
       await deleteSessionFromRedis(sessionKey);
     }
 
-    const useGCS =
-      process.env.USE_GCS_FOR_WHATSAPP === "true" ||
-      process.env.NODE_ENV === "production";
-    if (useGCS) {
-      await deleteGCSSessionDir(sessionKey);
-    }
-    const sessionDir = path.join(
-      process.cwd(),
-      "whatsapp_sessions",
-      sessionKey
-    );
+    const sessionDir = getSessionDir(sessionKey);
     if (fs.existsSync(sessionDir)) {
       fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 
+    await clearWhatsAppStatusCache(tenantSlug, branchId);
     await ensureWhatsappConfig(tenantSlug, branchId);
     const where = { tenant_slug: tenantSlug };
     if (branchId !== null && branchId !== undefined) {

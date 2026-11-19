@@ -1,0 +1,139 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-kuwaitqumash_db}
+      POSTGRES_USER: ${DB_USER:-kuwaitqumash}
+      POSTGRES_PASSWORD: ${DB_PASS:?DB_PASS is required}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "100"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE in .env (e.g. ghcr.io/user/kuwaitqumash-backend:latest)}
+    env_file:
+      - ./.env
+    environment:
+      DB_HOST: postgres
+      REDIS_ENABLED: "false"
+    command: ["npm", "run", "db:migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE in .env (e.g. ghcr.io/user/kuwaitqumash-backend:latest)}
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      DB_HOST: postgres
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+      WA_SEPARATE_WORKER: "true"
+      ALLOW_PUBLIC_SIGNUP: "${ALLOW_PUBLIC_SIGNUP:-false}"
+      REQUIRE_DB: "true"
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["node", "src/app.js"]
+
+  whatsapp-worker:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE in .env (e.g. ghcr.io/user/kuwaitqumash-backend:latest)}
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      DB_HOST: postgres
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+      WA_AUTH_DIR: /app/whatsapp_sessions
+      WA_RECONNECT_STAGGER_MS: "2000"
+      WA_BULK_DAILY_LIMIT: "100"
+      WA_QUIET_START_HOUR: "9"
+      WA_QUIET_END_HOUR: "22"
+    volumes:
+      - wa_sessions:/app/whatsapp_sessions
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    command: ["node", "workers/whatsapp-worker.js"]
+
+  dashboard-worker:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE in .env (e.g. ghcr.io/user/kuwaitqumash-backend:latest)}
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      DB_HOST: postgres
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    command: ["node", "workers/dashboard-worker.js"]
+
+  pg-backup:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE in .env (e.g. ghcr.io/user/kuwaitqumash-backend:latest)}
+    user: root
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      DB_HOST: postgres
+      REDIS_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        while true; do
+          echo "[backup] Waiting 24h before next PostgreSQL -> R2 backup..."
+          sleep 86400
+          node scripts/backup-postgres-to-r2.js || echo "[backup] Backup failed; retrying next cycle"
+        done
+
+volumes:
+  pg_data:
+  redis_data:
+  wa_sessions:

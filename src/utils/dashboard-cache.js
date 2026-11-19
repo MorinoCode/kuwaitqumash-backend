@@ -10,8 +10,8 @@ export const invalidateDashboardCache = async (tenantSlug) => {
   if (!tenantSlug) return;
 
   try {
-    await cacheDeletePattern(`dashboard:*:${tenantSlug}:*`);
-    await cacheDeletePattern(`analytics:${tenantSlug}:*`);
+    await cacheDeletePattern(`dashboard:*:${tenantSlug}*`);
+    await cacheDeletePattern(`analytics:${tenantSlug}*`);
   } catch (error) {
     logger.warn("Dashboard cache invalidation failed", {
       component: "dashboard-cache",

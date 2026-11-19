@@ -1,118 +1,90 @@
 import Tenant from "../domains/platform/tenant.model.js";
-import sequelize from "../config/database.js";
 import logger from "../utils/logger.js";
-import Branch from "../domains/store/branch.model.js";
-import User from "../domains/auth/user.model.js";
-import Customer from "../domains/customers/customer.model.js";
-import InventoryItem from "../domains/inventory/item.model.js";
-import Invoice from "../domains/sales/invoice.model.js";
-import InvoiceItem from "../domains/sales/invoice-item.model.js";
-import InvoicePayment from "../domains/sales/payment.model.js";
-import CustomInventoryOption from "../domains/inventory/custom-option.model.js";
-import Refund from "../domains/sales/refund.model.js";
-import RefundItem from "../domains/sales/refund-item.model.js";
-import RefundPayment from "../domains/sales/refund-payment.model.js";
+import {
+  getCachedTenantBySlug,
+  serializeTenantForCache,
+  setCachedTenantBySlug,
+} from "../utils/tenant-cache.js";
 
-const syncedTenants = new Set();
-const MAX_CACHE_SIZE = 1000;
+const SCHEMA_PATTERN = /^[a-zA-Z0-9_]+$/;
+const GRACE_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-const syncInProgress = new Map();
+const isAuthLifecyclePath = (req) => {
+  const url = req.originalUrl || req.url || "";
+  return /^\/api\/auth\/(login|logout)(\?|$)/.test(url);
+};
 
-const ensureTenantTables = async (schemaName) => {
-
-  if (syncedTenants.has(schemaName)) {
-    return;
+export const evaluateSubscriptionState = (tenant, nowMs = Date.now()) => {
+  if (!tenant) {
+    return { allowed: false, status: 404, message: "Store not found." };
   }
 
-  if (syncInProgress.has(schemaName)) {
-    return syncInProgress.get(schemaName);
+  if (tenant.subscription_status !== "active") {
+    return {
+      allowed: false,
+      status: 403,
+      code: "SUBSCRIPTION_INACTIVE",
+      message: "Store subscription is inactive or suspended. Please contact support.",
+    };
   }
 
-  const syncWork = (async () => {
-    try {
+  if (!tenant.subscription_expires_at) {
+    return { allowed: true, mode: "active", headers: {} };
+  }
 
-    const [tableCheck] = await sequelize.query(
-      `SELECT COUNT(*)::int as table_count
-       FROM information_schema.tables
-       WHERE table_schema = $1
-       AND table_name IN ('branches', 'users', 'customers', 'inventory_items')`,
-      {
-        bind: [schemaName],
-        type: sequelize.QueryTypes.SELECT,
+  const expiresAtMs = new Date(tenant.subscription_expires_at).getTime();
+  if (Number.isNaN(expiresAtMs)) {
+    return { allowed: true, mode: "active", headers: {} };
+  }
+
+  const expiresIso = new Date(expiresAtMs).toISOString();
+  const graceEndsMs = expiresAtMs + GRACE_PERIOD_MS;
+
+  if (nowMs > graceEndsMs) {
+    return {
+      allowed: true,
+      mode: "readonly",
+      headers: {
+        "x-subscription-warning": "expired_readonly",
+        "x-subscription-readonly": "true",
+        "x-subscription-expires-at": expiresIso,
       },
-    );
-
-    const existingTableCount = tableCheck?.table_count || 0;
-
-    const [refundCheck] = await sequelize.query(
-      `SELECT EXISTS (
-        SELECT FROM information_schema.tables
-        WHERE table_schema = $1 AND table_name = 'refunds'
-      ) AS exists`,
-      { bind: [schemaName], type: sequelize.QueryTypes.SELECT }
-    );
-    const hasRefundTables = refundCheck?.exists === true;
-
-    if (existingTableCount < 4 || !hasRefundTables) {
-
-      logger.info("Lazy sync: Creating missing tables for tenant", {
-        component: "tenant.middleware",
-        schema: schemaName,
-        existingTables: existingTableCount,
-        hasRefundTables,
-      });
-
-      await Branch.schema(schemaName).sync({ alter: false });
-      await User.schema(schemaName).sync({ alter: false });
-      await Customer.schema(schemaName).sync({ alter: false });
-      await InventoryItem.schema(schemaName).sync({ alter: false });
-
-      try {
-        await CustomInventoryOption.schema(schemaName).sync({ alter: false });
-      } catch (customOptionError) {
-        void customOptionError;
-
-      }
-
-      await Invoice.schema(schemaName).sync({ alter: false });
-      await InvoiceItem.schema(schemaName).sync({ alter: false });
-      await InvoicePayment.schema(schemaName).sync({ alter: false });
-      await Refund.schema(schemaName).sync({ alter: false });
-      await RefundItem.schema(schemaName).sync({ alter: false });
-      await RefundPayment.schema(schemaName).sync({ alter: false });
-
-      logger.info("Lazy sync completed for tenant", {
-        component: "tenant.middleware",
-        schema: schemaName,
-      });
-    }
-
-    if (syncedTenants.size >= MAX_CACHE_SIZE) {
-
-      const firstItem = syncedTenants.values().next().value;
-      syncedTenants.delete(firstItem);
-    }
-    syncedTenants.add(schemaName);
-  } catch (syncError) {
-    logger.warn("Lazy sync failed, continuing anyway", {
-      component: "tenant.middleware",
-      schema: schemaName,
-      error: syncError.message,
-    });
-
+      expiresAtMs,
+      graceEndsMs,
+    };
   }
-  })();
 
-  syncInProgress.set(schemaName, syncWork);
-  try {
-    await syncWork;
-  } finally {
-    syncInProgress.delete(schemaName);
+  if (nowMs > expiresAtMs) {
+    return {
+      allowed: true,
+      mode: "grace",
+      headers: {
+        "x-subscription-warning": "grace_period",
+        "x-subscription-expires-at": expiresIso,
+        "x-subscription-grace-ends-at": new Date(graceEndsMs).toISOString(),
+      },
+      expiresAtMs,
+      graceEndsMs,
+    };
   }
+
+  if (expiresAtMs - nowMs <= GRACE_PERIOD_MS) {
+    return {
+      allowed: true,
+      mode: "expiring_soon",
+      headers: {
+        "x-subscription-expiring-soon": "true",
+        "x-subscription-expires-at": expiresIso,
+      },
+      expiresAtMs,
+    };
+  }
+
+  return { allowed: true, mode: "active", headers: {}, expiresAtMs };
 };
 
 export const resolveTenant = async (req, res, next) => {
-
   const tenantSlug = req.headers["x-tenant-id"];
 
   if (!tenantSlug) {
@@ -122,34 +94,60 @@ export const resolveTenant = async (req, res, next) => {
   }
 
   try {
-
-    const tenant = await Tenant.findOne({
-      where: { slug: tenantSlug, subscription_status: "active" },
-    });
+    let tenant = await getCachedTenantBySlug(tenantSlug);
+    if (!tenant) {
+      const dbTenant = await Tenant.findOne({ where: { slug: tenantSlug } });
+      if (dbTenant) {
+        tenant = serializeTenantForCache(dbTenant);
+        await setCachedTenantBySlug(tenant);
+      }
+    }
 
     if (!tenant) {
       return res.status(404).json({ message: "Store not found or inactive." });
     }
 
-    const schemaName = tenant.db_schema;
-    if (!/^[a-zA-Z0-9_]+$/.test(schemaName)) {
+    if (!SCHEMA_PATTERN.test(tenant.db_schema || "")) {
       throw new Error("Invalid schema name detected.");
     }
 
-    await sequelize.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}";`);
+    const subState = evaluateSubscriptionState(tenant);
+    if (!subState.allowed) {
+      return res.status(subState.status).json({
+        message: subState.message,
+        ...(subState.code ? { code: subState.code } : {}),
+      });
+    }
 
-    await ensureTenantTables(schemaName);
+    if (typeof res.setHeader === "function") {
+      for (const [header, value] of Object.entries(subState.headers || {})) {
+        res.setHeader(header, value);
+      }
+    }
+
+    if (
+      subState.mode === "readonly" &&
+      !READ_METHODS.has(req.method) &&
+      !isAuthLifecyclePath(req)
+    ) {
+      return res.status(403).json({
+        message:
+          "Subscription expired. Account is in read-only mode. Please contact support to renew.",
+        code: "SUBSCRIPTION_EXPIRED_READONLY",
+      });
+    }
 
     req.tenant = tenant;
+    req.subscriptionState = subState;
     next();
   } catch (error) {
-    logger.error("Tenant resolution error", {
+    logger.error("Tenant Resolution Error", {
       component: "tenant.middleware",
       error: error?.message,
       stack: error?.stack,
+      requestId: req.requestId,
+      tenantSlug,
     });
-    res
-      .status(500)
-      .json({ message: "Internal Server Error during tenant resolution." });
+    res.status(500).json({ message: "Error resolving store context." });
   }
 };

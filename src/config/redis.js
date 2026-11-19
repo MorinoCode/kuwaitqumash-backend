@@ -5,11 +5,12 @@ import { memoryCacheGet, memoryCacheSet, memoryCacheDelete, memoryCacheDeletePat
 let redisClient = null;
 let redisAvailable = false;
 
-const isRedisEnabled = () =>
+export const isRedisEnabled = () =>
   process.env.REDIS_ENABLED === "true" || process.env.REDIS_ENABLED === "1";
 
-const initRedis = () => {
-  if (!isRedisEnabled()) return;
+export const initRedis = () => {
+  if (!isRedisEnabled()) return null;
+  if (redisClient) return redisClient;
   try {
     const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
 
@@ -20,7 +21,7 @@ const initRedis = () => {
       },
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
-      enableOfflineQueue: false,
+      enableOfflineQueue: true,
       lazyConnect: true,
     });
 
@@ -114,7 +115,29 @@ export const getRedisClient = () => {
   return redisAvailable ? redisClient : null;
 };
 
-export const isRedisAvailable = () => isRedisEnabled() && redisAvailable;
+export const isRedisAvailable = () => {
+  if (!isRedisEnabled()) return false;
+  if (!redisClient) {
+    initRedis();
+  }
+  return redisAvailable;
+};
+
+export const ensureRedisConnected = async (timeoutMs = 2000) => {
+  if (!isRedisEnabled()) return false;
+  if (!redisClient) {
+    initRedis();
+  }
+  if (redisAvailable) return true;
+  if (!redisClient) return false;
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (redisAvailable) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return redisAvailable;
+};
 
 export const cacheGet = async (key) => {
   const client = getRedisClient();

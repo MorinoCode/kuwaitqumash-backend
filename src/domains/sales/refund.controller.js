@@ -14,6 +14,7 @@ import logger from "../../utils/logger.js";
 import { shouldRearmAlert } from "../../utils/lowStock.js";
 import { applyRefundToStock } from "../../utils/stock.js";
 import { invalidateDashboardCache } from "../../utils/dashboard-cache.js";
+import { startOfKuwaitDay, endOfKuwaitDay } from "../../utils/kuwaitTime.js";
 
 export const getInvoiceForRefund = async (req, res) => {
   try {
@@ -70,7 +71,7 @@ export const getInvoiceForRefund = async (req, res) => {
       try {
         refundItems = await RefundItem.schema(schema).findAll({
           where: { invoice_item_id: { [Op.in]: itemIds } },
-          attributes: ["invoice_item_id", "quantity_refunded", "amount_refunded"],
+          attributes: ["invoice_item_id", "quantity_refunded", "meters", "amount_refunded"],
         });
       } catch (refundQueryErr) {
         logger.warn("RefundItem query failed (table may not exist)", {
@@ -81,20 +82,38 @@ export const getInvoiceForRefund = async (req, res) => {
       }
     }
 
+    const round3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
     const refundedByItem = {};
     refundItems.forEach((ri) => {
       if (!refundedByItem[ri.invoice_item_id]) {
-        refundedByItem[ri.invoice_item_id] = { qty: 0, amount: 0 };
+        refundedByItem[ri.invoice_item_id] = { qty: 0, meters: 0, amount: 0 };
       }
-      refundedByItem[ri.invoice_item_id].qty += parseInt(ri.quantity_refunded, 10);
-      refundedByItem[ri.invoice_item_id].amount += parseFloat(ri.amount_refunded);
+      const rQty = parseInt(ri.quantity_refunded, 10) || 1;
+      refundedByItem[ri.invoice_item_id].qty += rQty;
+      refundedByItem[ri.invoice_item_id].meters = round3(
+        refundedByItem[ri.invoice_item_id].meters + parseFloat(ri.meters || 0) * rQty,
+      );
+      refundedByItem[ri.invoice_item_id].amount = round3(
+        refundedByItem[ri.invoice_item_id].amount + parseFloat(ri.amount_refunded || 0),
+      );
     });
 
     const itemsWithRefundable = items.map((item) => {
-      const refunded = refundedByItem[item.id] || { qty: 0, amount: 0 };
-      const qtyAvailable = Math.max(0, parseInt(item.quantity, 10) - refunded.qty);
-      const amountPerUnit = qtyAvailable > 0 ? parseFloat(item.total_price) / parseInt(item.quantity, 10) : 0;
-      const amountRefundable = amountPerUnit * qtyAvailable;
+      const refunded = refundedByItem[item.id] || { qty: 0, meters: 0, amount: 0 };
+      const itemQty = parseInt(item.quantity, 10) || 1;
+      const itemMeters = parseFloat(item.meters || 0);
+      const totalMeters = round3(itemMeters * itemQty);
+      const metersAvailable = Math.max(0, round3(totalMeters - refunded.meters));
+      const qtyAvailable =
+        totalMeters > 0
+          ? metersAvailable > 0.001
+            ? Math.max(1, Math.min(itemQty, Math.ceil(metersAvailable / Math.max(itemMeters, 0.001))))
+            : 0
+          : Math.max(0, itemQty - refunded.qty);
+      const amountRefundable = Math.max(
+        0,
+        round3(parseFloat(item.total_price || 0) - refunded.amount),
+      );
 
       return {
         id: item.id,
@@ -102,8 +121,11 @@ export const getInvoiceForRefund = async (req, res) => {
         inventory_item_id: item.inventory_item_id,
         item_name: item.item_name,
         fabric_type: item.fabric_type,
-        meters: parseFloat(item.meters),
-        quantity: parseInt(item.quantity, 10),
+        meters: itemMeters,
+        total_meters: totalMeters,
+        meters_refunded: refunded.meters,
+        meters_available: metersAvailable,
+        quantity: itemQty,
         quantity_refunded: refunded.qty,
         quantity_available: qtyAvailable,
         total_price: parseFloat(item.total_price),
@@ -151,12 +173,17 @@ export const createRefund = async (req, res) => {
     await sequelize.query(`SET LOCAL search_path TO "${schema}", public`, { transaction: t });
 
     const invoice = await Invoice.schema(schema).findByPk(invoice_id, {
-      include: [{ model: InvoiceItem.schema(schema), as: "items" }],
       transaction: t,
-      lock: t.LOCK.UPDATE
+      lock: t.LOCK.UPDATE,
     });
 
     if (!invoice) throw new Error("Invoice not found");
+
+    const invoiceItems = await InvoiceItem.schema(schema).findAll({
+      where: { invoice_id },
+      transaction: t,
+    });
+    invoice.items = invoiceItems;
 
     if (invoice.status === "Refunded") {
       throw new Error("Invoice is already fully refunded");
@@ -172,17 +199,42 @@ export const createRefund = async (req, res) => {
       throw new Error("Access denied to this invoice");
     }
 
+    const round3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
     const refundItemsByInvItem = {};
+    const refundMetersByInvItem = {};
+    const refundAmountsByInvItem = {};
     const existingRefunds = await RefundItem.schema(schema).findAll({
       where: { invoice_item_id: items.map((i) => i.invoice_item_id) },
+      attributes: ["invoice_item_id", "quantity_refunded", "meters", "amount_refunded"],
       transaction: t
     });
     existingRefunds.forEach((r) => {
-      if (!refundItemsByInvItem[r.invoice_item_id]) {
-        refundItemsByInvItem[r.invoice_item_id] = 0;
-      }
-      refundItemsByInvItem[r.invoice_item_id] += parseInt(r.quantity_refunded, 10);
+      const invItemId = r.invoice_item_id;
+      const rQty = parseInt(r.quantity_refunded, 10) || 1;
+      refundItemsByInvItem[invItemId] =
+        (refundItemsByInvItem[invItemId] || 0) + rQty;
+      refundMetersByInvItem[invItemId] = round3(
+        (refundMetersByInvItem[invItemId] || 0) + parseFloat(r.meters || 0) * rQty,
+      );
+      refundAmountsByInvItem[invItemId] = round3(
+        (refundAmountsByInvItem[invItemId] || 0) + parseFloat(r.amount_refunded || 0),
+      );
     });
+
+    const allPreviousInvoiceRefunds = await Refund.schema(schema).findAll({
+      where: { invoice_id: invoice.id, status: "Completed" },
+      attributes: ["total_amount"],
+      transaction: t,
+    });
+    const alreadyRefundedInvoiceTotal = allPreviousInvoiceRefunds.reduce(
+      (sum, r) => sum + parseFloat(r.total_amount || 0),
+      0,
+    );
+    const invoiceTotal = parseFloat(invoice.total_amount || 0);
+    const maxInvoiceRefundable = Math.max(
+      0,
+      Math.round((invoiceTotal - alreadyRefundedInvoiceTotal) * 1000) / 1000,
+    );
 
     const invoiceItemsMap = {};
     invoice.items.forEach((i) => {
@@ -191,29 +243,79 @@ export const createRefund = async (req, res) => {
 
     let totalRefundAmount = 0;
     const validatedItems = [];
+    const seenInvoiceItemIds = new Set();
 
     for (const it of items) {
+      if (seenInvoiceItemIds.has(it.invoice_item_id)) {
+        throw new Error(`Duplicate refund item detected for invoice item ID: ${it.invoice_item_id}`);
+      }
+      seenInvoiceItemIds.add(it.invoice_item_id);
       const invItem = invoiceItemsMap[it.invoice_item_id];
       if (!invItem) {
         throw new Error(`Invalid invoice item ID: ${it.invoice_item_id}`);
       }
-      const alreadyRefunded = refundItemsByInvItem[it.invoice_item_id] || 0;
-      const maxQty = Math.max(0, parseInt(invItem.quantity, 10) - alreadyRefunded);
-      if (it.quantity_refunded > maxQty) {
-        throw new Error(`Cannot refund ${it.quantity_refunded} of item "${invItem.item_name}". Maximum available: ${maxQty}`);
+      const invItemQty = parseInt(invItem.quantity, 10) || 1;
+      const invItemMeters = parseFloat(invItem.meters || 0);
+      const totalSoldMeters = round3(invItemMeters * invItemQty);
+      const alreadyRefundedMeters = refundMetersByInvItem[it.invoice_item_id] || 0;
+      const maxMetersAvailable = Math.max(0, round3(totalSoldMeters - alreadyRefundedMeters));
+
+      const isMeteredRefund =
+        it.meters_refunded !== undefined &&
+        it.meters_refunded !== null &&
+        totalSoldMeters > 0;
+
+      let effectiveMeters;
+      let effectiveQty;
+
+      if (isMeteredRefund) {
+        const requestedMeters = round3(parseFloat(it.meters_refunded));
+        if (isNaN(requestedMeters) || requestedMeters <= 0) continue;
+        if (requestedMeters > maxMetersAvailable + 0.001) {
+          throw new Error(
+            `Cannot refund ${requestedMeters.toFixed(3)} m of item "${invItem.item_name}". Maximum available: ${maxMetersAvailable.toFixed(3)} m`,
+          );
+        }
+        effectiveMeters = requestedMeters;
+        effectiveQty = 1;
+      } else {
+        const alreadyRefunded = refundItemsByInvItem[it.invoice_item_id] || 0;
+        const maxQty = Math.max(0, invItemQty - alreadyRefunded);
+        if (it.quantity_refunded > maxQty) {
+          throw new Error(`Cannot refund ${it.quantity_refunded} of item "${invItem.item_name}". Maximum available: ${maxQty}`);
+        }
+        if (it.quantity_refunded < 1) continue;
+        if (totalSoldMeters > 0 && round3(invItemMeters * it.quantity_refunded) > maxMetersAvailable + 0.001) {
+          throw new Error(
+            `Cannot refund ${(invItemMeters * it.quantity_refunded).toFixed(3)} m of item "${invItem.item_name}". Maximum available: ${maxMetersAvailable.toFixed(3)} m`,
+          );
+        }
+        effectiveMeters = invItemMeters;
+        effectiveQty = it.quantity_refunded;
       }
-      if (it.quantity_refunded < 1) continue;
 
       const amount = parseFloat(it.amount_refunded);
       if (isNaN(amount) || amount < 0) {
         throw new Error("Invalid amount for refund item");
       }
 
+      const itemTotalPrice = parseFloat(invItem.total_price || 0);
+      const alreadyRefundedAmount = refundAmountsByInvItem[it.invoice_item_id] || 0;
+      const maxItemRefundable = Math.max(
+        0,
+        Math.round((itemTotalPrice - alreadyRefundedAmount) * 1000) / 1000,
+      );
+      if (amount > maxItemRefundable + 0.005) {
+        throw new Error(
+          `Cannot refund ${amount.toFixed(3)} KWD for item "${invItem.item_name}". Maximum refundable balance remaining is ${maxItemRefundable.toFixed(3)} KWD.`,
+        );
+      }
+
       validatedItems.push({
         invoice_item_id: invItem.id,
         inventory_item_id: invItem.inventory_item_id,
-        meters: parseFloat(invItem.meters) || 0,
-        quantity_refunded: it.quantity_refunded,
+        meters: effectiveMeters,
+        quantity_refunded: effectiveQty,
         amount_refunded: amount,
       });
       totalRefundAmount = Math.round((totalRefundAmount + amount) * 1000) / 1000;
@@ -221,6 +323,12 @@ export const createRefund = async (req, res) => {
 
     if (validatedItems.length === 0) {
       throw new Error("No valid items to refund");
+    }
+
+    if (totalRefundAmount > maxInvoiceRefundable + 0.005) {
+      throw new Error(
+        `Total refund amount (${totalRefundAmount.toFixed(3)} KWD) exceeds remaining refundable invoice balance (${maxInvoiceRefundable.toFixed(3)} KWD).`,
+      );
     }
 
     const paymentsTotal = payments.reduce((s, p) => Math.round((s + parseFloat(p.amount || 0)) * 1000) / 1000, 0);
@@ -312,7 +420,6 @@ export const createRefund = async (req, res) => {
       { replacements: { invoiceId: invoice.id }, type: sequelize.QueryTypes.SELECT, transaction: t }
     );
     const totalRefundedSoFar = parseFloat(sumResult?.total || 0);
-    const invoiceTotal = parseFloat(invoice.total_amount || 0);
     const newStatus =
       totalRefundedSoFar >= invoiceTotal - 0.01
         ? "Refunded"
@@ -364,7 +471,7 @@ export const getCreditNotePDF = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
     const { id } = req.params;
-    const { disposition = "attachment" } = req.query;
+    const safeDisposition = req.query.disposition === "inline" ? "inline" : "attachment";
 
     if (!id || isNaN(id)) {
       return res.status(400).json({ message: "Invalid refund ID" });
@@ -408,7 +515,8 @@ export const getCreditNotePDF = async (req, res) => {
 
     const branchInfo = {
       location: branch?.location,
-      phone: branch?.phone
+      phone: branch?.phone,
+      storeName: req.tenant?.name || branchName,
     };
 
     const { buffer } = await generateCreditNotePDF(
@@ -426,7 +534,7 @@ export const getCreditNotePDF = async (req, res) => {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `${disposition}; filename="${filename}"`
+      `${safeDisposition}; filename="${filename}"`
     );
     res.send(buffer);
   } catch (error) {
@@ -442,12 +550,20 @@ export const getCreditNotePDF = async (req, res) => {
 export const getRefunds = async (req, res) => {
   try {
     const schema = req.tenant.db_schema;
-    const { invoice_id, branch_id, page = 1, limit = 20, search, start_date, end_date } = req.query;
+    const { invoice_id, branch_id, branch_ids, page = 1, limit = 20, search, start_date, end_date } = req.query;
 
     const where = {};
     if (invoice_id) where.invoice_id = invoice_id;
-    if (branch_id && req.user.role !== "store_owner") {
+    if (req.user.role !== "store_owner") {
       where.branch_id = req.user.branch_id;
+    } else if (branch_ids && String(branch_ids).trim()) {
+      const ids = String(branch_ids)
+        .split(",")
+        .map((v) => parseInt(v.trim(), 10))
+        .filter((v) => Number.isFinite(v) && v > 0);
+      if (ids.length > 0) {
+        where.branch_id = { [Op.in]: ids };
+      }
     } else if (branch_id) {
       where.branch_id = branch_id;
     }
@@ -455,14 +571,10 @@ export const getRefunds = async (req, res) => {
     if (start_date || end_date) {
       where.createdAt = {};
       if (start_date) {
-        const start = new Date(start_date);
-        start.setHours(0, 0, 0, 0);
-        where.createdAt[Op.gte] = start;
+        where.createdAt[Op.gte] = startOfKuwaitDay(start_date);
       }
       if (end_date) {
-        const end = new Date(end_date);
-        end.setHours(23, 59, 59, 999);
-        where.createdAt[Op.lte] = end;
+        where.createdAt[Op.lte] = endOfKuwaitDay(end_date);
       }
     }
 

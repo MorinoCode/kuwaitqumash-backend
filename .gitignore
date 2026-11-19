@@ -44,7 +44,7 @@ src/domains/dashboard/fix_owner.js
 src/domains/dashboard/refactor_dashboard.js
 
 # All scripts except setup/seed
-scripts/*
+# (All scripts in scripts/ are tracked so migrations & backups are included in git/Docker)
 !scripts/setup-database.js
 !scripts/seed-dummy-data.js
 !scripts/generate-db-structure.js
