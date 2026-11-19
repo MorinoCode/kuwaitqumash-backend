@@ -7,8 +7,6 @@ import { buildTenantIdentifiers } from "./tenantProvisioning.service.js";
 const routes = [
   ["post", "/register"],
   ["post", "/contact"],
-  ["get", "/contact"],
-  ["patch", "/contact/:id/read"],
 ];
 
 const has = (method, path) =>

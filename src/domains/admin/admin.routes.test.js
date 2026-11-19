@@ -18,6 +18,12 @@ const routes = [
   ["get", "/tenants/:id/inventory"],
   ["get", "/tenants/:id/invoices"],
   ["get", "/tenants/:id/customers"],
+  ["get", "/tenants/:id/users"],
+  ["put", "/tenants/:id/users/:userId/password"],
+  ["post", "/tenants/:id/reset-password"],
+  ["get", "/contact-messages"],
+  ["patch", "/contact-messages/:id"],
+  ["delete", "/contact-messages/:id"],
 ];
 
 const has = (method, path) =>
