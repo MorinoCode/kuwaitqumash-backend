@@ -39,9 +39,9 @@ test("buildTenantIdentifiers normalizes valid store names and rejects non-ASCII/
   assert.throws(() => buildTenantIdentifiers("پارچه سرای کویت"), { statusCode: 400 });
 });
 
-test("registerStore blocks with 403 only when ALLOW_PUBLIC_SIGNUP is explicitly false", async () => {
+test("registerStore permanently blocks public self-registration with 403 regardless of env", async () => {
   const previous = process.env.ALLOW_PUBLIC_SIGNUP;
-  process.env.ALLOW_PUBLIC_SIGNUP = "false";
+  process.env.ALLOW_PUBLIC_SIGNUP = "true";
   let statusCode = null;
   let payload = null;
   const res = {
