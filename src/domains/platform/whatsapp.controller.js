@@ -1,5 +1,4 @@
 import WhatsappConfig from "../platform/whatsapp.config.model.js";
-import Customer from "../customers/customer.model.js";
 import sequelize from "../../config/database.js";
 import { Op, QueryTypes } from "sequelize";
 import { getRedisClient, isRedisEnabled } from "../../config/redis.js";
@@ -312,7 +311,11 @@ export const getSettings = async (req, res) => {
   }
 };
 
-const fetchSegmentCustomers = async ({ schema, segment, branch_id }) => {
+export const fetchSegmentCustomers = async ({ schema, segment, branch_id }) => {
+  if (!/^[a-zA-Z0-9_]+$/.test(schema)) {
+    return [];
+  }
+
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
   const ninetyDaysAgo = new Date();
@@ -320,61 +323,104 @@ const fetchSegmentCustomers = async ({ schema, segment, branch_id }) => {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  const hasPhone = { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] };
+  const parsedBranchId = branch_id ? Number.parseInt(branch_id, 10) : null;
+  const branchClause =
+    Number.isInteger(parsedBranchId) && parsedBranchId > 0
+      ? "AND c.branch_id = :branchId"
+      : "";
+  const baseReplacements = {
+    ...(branchClause ? { branchId: parsedBranchId } : {}),
+  };
 
   if (segment === "all") {
-    const where = { phone: hasPhone };
-    if (branch_id) where.branch_id = branch_id;
-    return Customer.schema(schema).findAll({ where, attributes: ["id", "phone"] });
+    return sequelize.query(
+      `
+      SELECT c.id, c.phone
+      FROM "${schema}".customers c
+      WHERE c.phone IS NOT NULL AND c.phone <> ''
+        ${branchClause}
+      `,
+      { replacements: baseReplacements, type: QueryTypes.SELECT },
+    );
   }
 
   if (segment === "high_value_6m") {
-    const rows = await sequelize.query(
-      `SELECT customer_id FROM "${schema}".invoices WHERE created_at >= :sixMonthsAgo GROUP BY customer_id HAVING SUM(total_amount) >= 500`,
-      { replacements: { sixMonthsAgo }, type: QueryTypes.SELECT },
+    return sequelize.query(
+      `
+      SELECT c.id, c.phone
+      FROM "${schema}".customers c
+      INNER JOIN (
+        SELECT inv.customer_id
+        FROM "${schema}".invoices inv
+        WHERE inv.created_at >= :sixMonthsAgo
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY inv.customer_id
+        HAVING SUM(inv.total_amount) >= 500
+      ) hv ON hv.customer_id = c.id
+      WHERE c.phone IS NOT NULL AND c.phone <> ''
+        ${branchClause}
+      `,
+      {
+        replacements: { ...baseReplacements, sixMonthsAgo },
+        type: QueryTypes.SELECT,
+      },
     );
-    const ids = Array.isArray(rows)
-      ? rows.map((r) => r.customer_id).filter(Boolean)
-      : [];
-    if (ids.length === 0) return [];
-    const where = { id: { [Op.in]: ids }, phone: hasPhone };
-    if (branch_id) where.branch_id = branch_id;
-    return Customer.schema(schema).findAll({ where, attributes: ["id", "phone"] });
   }
 
   if (segment === "inactive_6m") {
-    const rows = await sequelize.query(
-      `SELECT DISTINCT customer_id FROM "${schema}".invoices WHERE created_at >= :sixMonthsAgo`,
-      { replacements: { sixMonthsAgo }, type: QueryTypes.SELECT },
+    return sequelize.query(
+      `
+      SELECT c.id, c.phone
+      FROM "${schema}".customers c
+      WHERE c.phone IS NOT NULL AND c.phone <> ''
+        ${branchClause}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "${schema}".invoices inv
+          WHERE inv.customer_id = c.id
+            AND inv.created_at >= :sixMonthsAgo
+        )
+      `,
+      {
+        replacements: { ...baseReplacements, sixMonthsAgo },
+        type: QueryTypes.SELECT,
+      },
     );
-    const activeIds = Array.isArray(rows)
-      ? rows.map((r) => r.customer_id).filter(Boolean)
-      : [];
-    const where = { phone: hasPhone };
-    if (activeIds.length) where.id = { [Op.notIn]: activeIds };
-    if (branch_id) where.branch_id = branch_id;
-    return Customer.schema(schema).findAll({ where, attributes: ["id", "phone"] });
   }
 
   if (segment === "last_30d" || segment === "last_90d") {
     const since = segment === "last_30d" ? thirtyDaysAgo : ninetyDaysAgo;
-    const rows = await sequelize.query(
-      `SELECT DISTINCT customer_id FROM "${schema}".invoices WHERE created_at >= :since`,
-      { replacements: { since }, type: QueryTypes.SELECT },
+    return sequelize.query(
+      `
+      SELECT c.id, c.phone
+      FROM "${schema}".customers c
+      WHERE c.phone IS NOT NULL AND c.phone <> ''
+        ${branchClause}
+        AND EXISTS (
+          SELECT 1
+          FROM "${schema}".invoices inv
+          WHERE inv.customer_id = c.id
+            AND inv.created_at >= :since
+        )
+      `,
+      {
+        replacements: { ...baseReplacements, since },
+        type: QueryTypes.SELECT,
+      },
     );
-    const ids = Array.isArray(rows)
-      ? rows.map((r) => r.customer_id).filter(Boolean)
-      : [];
-    if (ids.length === 0) return [];
-    const where = { id: { [Op.in]: ids }, phone: hasPhone };
-    if (branch_id) where.branch_id = branch_id;
-    return Customer.schema(schema).findAll({ where, attributes: ["id", "phone"] });
   }
 
   if (segment === "vip_only") {
-    const where = { phone: hasPhone, type: "VIP" };
-    if (branch_id) where.branch_id = branch_id;
-    return Customer.schema(schema).findAll({ where, attributes: ["id", "phone"] });
+    return sequelize.query(
+      `
+      SELECT c.id, c.phone
+      FROM "${schema}".customers c
+      WHERE c.phone IS NOT NULL AND c.phone <> ''
+        AND c.type = 'VIP'
+        ${branchClause}
+      `,
+      { replacements: baseReplacements, type: QueryTypes.SELECT },
+    );
   }
 
   return [];

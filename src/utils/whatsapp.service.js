@@ -13,230 +13,32 @@ import WhatsappConfig from "../domains/platform/whatsapp.config.model.js";
 import { formatPhoneForWhatsApp } from "./phone.utils.js";
 import logger from "./logger.js";
 import {
-  cacheSet,
-  cacheDelete,
-  getRedisClient,
-} from "../config/redis.js";
-import {
   clearWhatsAppStatusCache,
-  getSessionStatusFromStore,
   markWhatsAppPairedNow,
   publishWhatsAppStatusCache,
 } from "./whatsapp-status.js";
+import {
+  sessions,
+  sessionLastActivity,
+  saveSessionToRedis,
+  deleteSessionFromRedis,
+  touchSession,
+  evictOldestSessionIfNeeded,
+  getSessionDir,
+  getSessionKey,
+  cleanupDisconnectedSessions,
+  refreshActiveSessionStatuses,
+  closeAllWhatsAppSockets,
+  getSessionStatus,
+  getSocket,
+} from "./whatsappSessionStore.js";
 
-const REDIS_SESSION_PREFIX = "whatsapp:session:";
-const REDIS_SESSIONS_SET = "whatsapp:sessions:active";
-
-const getRedisSessionKey = (sessionKey) =>
-  `${REDIS_SESSION_PREFIX}${sessionKey}`;
-
-const saveSessionToRedis = async (sessionKey, sessionData) => {
-  try {
-    await cacheSet(getRedisSessionKey(sessionKey), sessionData, 3600);
-    const client = getRedisClient();
-    if (client) {
-      await client.sadd(REDIS_SESSIONS_SET, sessionKey);
-    }
-  } catch (error) {
-    logger.warn("Failed to save session to Redis", {
-      component: "whatsapp",
-      sessionKey,
-      error: error?.message,
-    });
-  }
-};
-
-const deleteSessionFromRedis = async (sessionKey) => {
-  try {
-    await cacheDelete(getRedisSessionKey(sessionKey));
-    const client = getRedisClient();
-    if (client) {
-      await client.srem(REDIS_SESSIONS_SET, sessionKey);
-    }
-  } catch (error) {
-    logger.warn("Failed to delete session from Redis", {
-      component: "whatsapp",
-      sessionKey,
-      error: error?.message,
-    });
-  }
-};
-
-const sessions = new Map();
-
-const getSessionsBaseDir = () =>
-  process.env.WA_AUTH_DIR ||
-  process.env.WHATSAPP_SESSIONS_DIR ||
-  path.join(process.cwd(), "whatsapp_sessions");
-
-const getSessionDir = (sessionKey) => path.join(getSessionsBaseDir(), sessionKey);
-
-const getSessionKey = (tenantSlug, branchId = null) => {
-  return branchId ? `${tenantSlug}_branch_${branchId}` : tenantSlug;
-};
-
-export const cleanupDisconnectedSessions = async () => {
-  try {
-    const disconnectedSessions = [];
-    const allSessionKeys = new Set();
-
-    try {
-      const client = getRedisClient();
-      if (client) {
-        const redisSessions = await client.smembers(REDIS_SESSIONS_SET);
-        redisSessions.forEach((key) => allSessionKeys.add(key));
-      }
-    } catch (redisError) {
-      void redisError;
-      logger.debug("Failed to get sessions from Redis, using memory only", {
-        component: "whatsapp",
-      });
-    }
-
-    sessions.forEach((_, key) => allSessionKeys.add(key));
-
-    for (const sessionKey of allSessionKeys) {
-      let isDisconnected = false;
-
-      const sock = sessions.get(sessionKey);
-      if (!sock || !sock.user) {
-        isDisconnected = true;
-      } else {
-
-        const [tenantSlug, branchIdStr] = sessionKey.includes("_branch_")
-          ? sessionKey.split("_branch_")
-          : [sessionKey, null];
-        const branchId = branchIdStr ? parseInt(branchIdStr) : null;
-
-        const where = { tenant_slug: tenantSlug };
-        if (branchId !== null && branchId !== undefined) {
-          where.branch_id = branchId;
-        } else {
-          where.branch_id = { [Op.is]: null };
-        }
-
-        const config = await WhatsappConfig.findOne({ where });
-        if (!config || config.session_status !== "CONNECTED") {
-          isDisconnected = true;
-        }
-      }
-
-      if (isDisconnected) {
-        disconnectedSessions.push(sessionKey);
-      }
-    }
-
-    for (const sessionKey of disconnectedSessions) {
-      const sock = sessions.get(sessionKey);
-      if (sock) {
-        try {
-          await sock.end();
-        } catch (e) {
-          logger.warn("Error ending socket during cleanup", {
-            component: "whatsapp",
-            sessionKey,
-            error: e?.message,
-          });
-        }
-      }
-      sessions.delete(sessionKey);
-      await deleteSessionFromRedis(sessionKey);
-      logger.info("Cleaned up disconnected session", {
-        component: "whatsapp",
-        sessionKey,
-      });
-    }
-
-    if (disconnectedSessions.length > 0) {
-      logger.info("WhatsApp session cleanup completed", {
-        component: "whatsapp",
-        cleaned: disconnectedSessions.length,
-        remaining: sessions.size,
-      });
-    }
-  } catch (error) {
-    logger.error("WhatsApp session cleanup error", {
-      component: "whatsapp",
-      error: error?.message,
-    });
-  }
-};
-
-export const refreshActiveSessionStatuses = async () => {
-  for (const [sessionKey, sock] of sessions.entries()) {
-    if (!sock?.user) continue;
-    const branchMatch = /^(.*)_branch_(\d+)$/.exec(sessionKey);
-    const tenantSlug = branchMatch ? branchMatch[1] : sessionKey;
-    const branchId = branchMatch ? Number.parseInt(branchMatch[2], 10) : null;
-    const uid = sock.user?.id;
-    const phone = typeof uid === "string" ? uid.split(":")[0] : null;
-    await publishWhatsAppStatusCache(tenantSlug, branchId, {
-      status: "CONNECTED",
-      is_ready: true,
-      phone_connected: phone,
-    });
-  }
-};
-
-export const closeAllWhatsAppSockets = async () => {
-  for (const [sessionKey, sock] of sessions.entries()) {
-    try {
-      sock?.end?.(new Error("Worker shutdown"));
-    } catch {
-      // Ignore socket close errors on shutdown
-    }
-    sessions.delete(sessionKey);
-  }
-};
-
-export const getSessionStatus = async (tenantSlug, branchId = null) => {
-  try {
-    const normBranchId =
-      branchId !== null && branchId !== undefined ? Number(branchId) : null;
-    const sessionKey = getSessionKey(tenantSlug, normBranchId);
-    const session = sessions.get(sessionKey);
-    const uid = session?.user?.id;
-    const phone = typeof uid === "string" ? uid.split(":")[0] : null;
-    if (session?.user) {
-      return {
-        status: "CONNECTED",
-        is_ready: true,
-        phone_connected: phone || null,
-        is_central_fallback: false,
-      };
-    }
-
-    if (normBranchId !== null) {
-      const centralKey = getSessionKey(tenantSlug, null);
-      const centralSession = sessions.get(centralKey);
-      const centralUid = centralSession?.user?.id;
-      const centralPhone =
-        typeof centralUid === "string" ? centralUid.split(":")[0] : null;
-      if (centralSession?.user) {
-        return {
-          status: "CONNECTED",
-          is_ready: true,
-          phone_connected: centralPhone || null,
-          is_central_fallback: true,
-        };
-      }
-    }
-
-    return await getSessionStatusFromStore(tenantSlug, normBranchId);
-  } catch (e) {
-    logger.warn("getSessionStatus error", {
-      component: "whatsapp",
-      tenantSlug,
-      branchId,
-      error: e?.message,
-    });
-    return {
-      status: "NOT_CONFIGURED",
-      is_ready: false,
-      phone_connected: null,
-      is_central_fallback: false,
-    };
-  }
+export {
+  cleanupDisconnectedSessions,
+  refreshActiveSessionStatuses,
+  closeAllWhatsAppSockets,
+  getSessionStatus,
+  getSocket,
 };
 
 const VERSION_FETCH_TIMEOUT_MS = 15000;
@@ -349,6 +151,7 @@ export const connectToWhatsApp = async (
         void e;
       }
       sessions.delete(sessionKey);
+      sessionLastActivity.delete(sessionKey);
       await deleteSessionFromRedis(sessionKey);
     }
 
@@ -390,14 +193,9 @@ export const connectToWhatsApp = async (
     });
     log("makeWASocket created");
 
+    await evictOldestSessionIfNeeded(sessionKey);
     sessions.set(sessionKey, sock);
-
-    await saveSessionToRedis(sessionKey, {
-      tenantSlug,
-      branchId,
-      connected: true,
-      timestamp: Date.now(),
-    });
+    touchSession(sessionKey);
 
     await saveSessionToRedis(sessionKey, {
       tenantSlug,
@@ -492,14 +290,14 @@ export const connectToWhatsApp = async (
 
           if (isLoggedOut || isReplaced) {
             try {
-              if (fs.existsSync(sessionDir))
-                fs.rmSync(sessionDir, { recursive: true, force: true });
+              await fs.promises.rm(sessionDir, { recursive: true, force: true });
             } catch (cleanupError) {
               logErr("Session cleanup failed", {
                 error: cleanupError?.message,
               });
             }
             sessions.delete(sessionKey);
+            sessionLastActivity.delete(sessionKey);
             await deleteSessionFromRedis(sessionKey);
 
             if (!hasConnected && socketCallback) {
@@ -665,6 +463,7 @@ export const resolveConfigAndSocket = async (tenantSlug, branchId = null) => {
         }
       }
       if (branchSock && branchSock.user) {
+        touchSession(branchKey);
         return {
           sock: branchSock,
           config: branchConfig,
@@ -703,6 +502,7 @@ export const resolveConfigAndSocket = async (tenantSlug, branchId = null) => {
       }
     }
     if (centralSock && centralSock.user) {
+      touchSession(centralKey);
       return {
         sock: centralSock,
         config: centralConfig,
@@ -746,8 +546,21 @@ export const sendInvoicePDF = async (
       return false;
     }
 
-    if (fs.existsSync(pdfPath)) {
-      const pdfBuffer = fs.readFileSync(pdfPath);
+    let pdfBuffer = null;
+    try {
+      pdfBuffer = await fs.promises.readFile(pdfPath);
+    } catch (readErr) {
+      if (readErr?.code !== "ENOENT") {
+        logger.warn("Failed to read PDF for WhatsApp send", {
+          component: "whatsapp",
+          tenantSlug,
+          branchId,
+          error: readErr?.message,
+        });
+      }
+    }
+
+    if (pdfBuffer) {
       const fileName = path.basename(pdfPath);
 
       logger.info("Sending PDF via WhatsApp", {
@@ -796,53 +609,6 @@ export const sendInvoicePDF = async (
   }
 };
 
-export const getSocket = (tenantSlug, branchId = null) => {
-  const normBranchId =
-    branchId !== null && branchId !== undefined ? Number(branchId) : null;
-  const sessionKey = getSessionKey(tenantSlug, normBranchId);
-  let sock = sessions.get(sessionKey);
-
-  if ((!sock || !sock.user) && normBranchId !== null) {
-    const centralKey = getSessionKey(tenantSlug, null);
-    const centralSock = sessions.get(centralKey);
-    if (centralSock && centralSock.user) {
-      return centralSock;
-    }
-  }
-
-  if (!sock) {
-    logger.warn("Socket not found in sessions", {
-      component: "whatsapp",
-      tenantSlug,
-      branchId: normBranchId,
-      sessionKey,
-      availableSessions: Array.from(sessions.keys()),
-    });
-    return null;
-  }
-
-  if (!sock.user) {
-    logger.warn("Socket exists but user not authenticated", {
-      component: "whatsapp",
-      tenantSlug,
-      branchId: normBranchId,
-      sessionKey,
-      socketExists: true,
-      hasUser: false,
-    });
-    return null;
-  }
-
-  logger.info("Socket found and ready", {
-    component: "whatsapp",
-    tenantSlug,
-    branchId: normBranchId,
-    sessionKey,
-    userId: sock.user?.id,
-  });
-
-  return sock;
-};
 
 const formatPhoneJid = (phone) => {
   return formatPhoneForWhatsApp(phone);
@@ -1013,13 +779,12 @@ export const logoutWhatsApp = async (tenantSlug, branchId = null) => {
         }
       }
       sessions.delete(sessionKey);
+      sessionLastActivity.delete(sessionKey);
       await deleteSessionFromRedis(sessionKey);
     }
 
     const sessionDir = getSessionDir(sessionKey);
-    if (fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
+    await fs.promises.rm(sessionDir, { recursive: true, force: true });
 
     await clearWhatsAppStatusCache(tenantSlug, branchId);
     await ensureWhatsappConfig(tenantSlug, branchId);

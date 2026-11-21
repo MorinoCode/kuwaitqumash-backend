@@ -19,24 +19,33 @@ const FILE_SIGNATURES = {
     'application/vnd.ms-excel': [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
 };
 
-const validateFileContent = (filePath, expectedMimeType) => {
+const HEADER_BYTES_TO_READ = 16;
+
+const validateFileContent = async (filePath, expectedMimeType) => {
+    let handle;
     try {
-        const buffer = fs.readFileSync(filePath);
-        if (buffer.length === 0) {
+        handle = await fs.promises.open(filePath, 'r');
+        const buffer = Buffer.alloc(HEADER_BYTES_TO_READ);
+        const { bytesRead } = await handle.read(buffer, 0, HEADER_BYTES_TO_READ, 0);
+        if (bytesRead === 0) {
             return false;
         }
 
         const signatures = FILE_SIGNATURES[expectedMimeType];
         if (!signatures) {
-
             return true;
+        }
+
+        if (bytesRead < signatures.length) {
+            return false;
         }
 
         const matches = signatures.every((byte, index) => buffer[index] === byte);
 
         if (expectedMimeType === 'image/webp') {
+            if (bytesRead < 12) return false;
             const hasRiff = buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46;
-            const hasWebp = buffer.slice(8, 12).toString() === 'WEBP';
+            const hasWebp = buffer.subarray(8, 12).toString('ascii') === 'WEBP';
             return hasRiff && hasWebp;
         }
 
@@ -44,7 +53,19 @@ const validateFileContent = (filePath, expectedMimeType) => {
     } catch (error) {
         void error;
         return false;
+    } finally {
+        if (handle) {
+            await handle.close().catch(() => {});
+        }
     }
+};
+
+const cleanupTempFiles = async (files) => {
+    await Promise.all(
+        files
+            .filter((f) => f && f.path)
+            .map((f) => fs.promises.unlink(f.path).catch(() => {})),
+    );
 };
 
 const storage = multer.diskStorage({
@@ -66,31 +87,23 @@ const fileFilter = (req, file, cb) => {
     }
 };
 
-export const validateImageContent = (req, res, next) => {
+export const validateImageContent = async (req, res, next) => {
     if (!req.files && !req.file) {
         return next();
     }
 
     const files = req.files ? (Array.isArray(req.files) ? req.files : Object.values(req.files).flat()) : [req.file];
+    const validatableFiles = files.filter((file) => file && file.path);
 
-    for (const file of files) {
-        if (!file || !file.path) continue;
+    const results = await Promise.all(
+        validatableFiles.map((file) => validateFileContent(file.path, file.mimetype)),
+    );
 
-        const isValid = validateFileContent(file.path, file.mimetype);
-        if (!isValid) {
-            for (const f of files) {
-                if (f && f.path && fs.existsSync(f.path)) {
-                    try {
-                        fs.unlinkSync(f.path);
-                    } catch (e) {
-                        void e;
-                    }
-                }
-            }
-            return res.status(400).json({
-                message: 'Invalid file content. File does not match its declared type.'
-            });
-        }
+    if (results.some((isValid) => !isValid)) {
+        await cleanupTempFiles(files);
+        return res.status(400).json({
+            message: 'Invalid file content. File does not match its declared type.'
+        });
     }
 
     next();
@@ -113,7 +126,7 @@ const excelFileFilter = (req, file, cb) => {
     }
 };
 
-export const validateExcelContent = (req, res, next) => {
+export const validateExcelContent = async (req, res, next) => {
     if (!req.file && !req.files) {
         return next();
     }
@@ -123,17 +136,9 @@ export const validateExcelContent = (req, res, next) => {
         return next();
     }
 
-    const isValid = validateFileContent(file.path, file.mimetype);
+    const isValid = await validateFileContent(file.path, file.mimetype);
     if (!isValid) {
-
-        try {
-            if (fs.existsSync(file.path)) {
-                fs.unlinkSync(file.path);
-            }
-        } catch (e) {
-            void e;
-
-        }
+        await cleanupTempFiles([file]);
         return res.status(400).json({
             message: 'Invalid Excel file. File does not match its declared type.'
         });

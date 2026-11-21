@@ -46,6 +46,8 @@ services:
       - ./.env
     environment:
       DB_HOST: postgres
+      DB_POOL_MAX: "${API_DB_POOL_MAX:-15}"
+      DB_POOL_MIN: "${API_DB_POOL_MIN:-3}"
       REDIS_ENABLED: "true"
       REDIS_URL: redis://redis:6379
       WA_SEPARATE_WORKER: "true"
@@ -69,6 +71,8 @@ services:
       - ./.env
     environment:
       DB_HOST: postgres
+      DB_POOL_MAX: "${WA_DB_POOL_MAX:-5}"
+      DB_POOL_MIN: "${WA_DB_POOL_MIN:-1}"
       REDIS_ENABLED: "true"
       REDIS_URL: redis://redis:6379
       WA_AUTH_DIR: /app/whatsapp_sessions
@@ -96,6 +100,8 @@ services:
       - ./.env
     environment:
       DB_HOST: postgres
+      DB_POOL_MAX: "${DASHBOARD_DB_POOL_MAX:-5}"
+      DB_POOL_MIN: "${DASHBOARD_DB_POOL_MIN:-1}"
       REDIS_ENABLED: "true"
       REDIS_URL: redis://redis:6379
     depends_on:

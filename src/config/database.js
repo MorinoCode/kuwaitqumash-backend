@@ -19,16 +19,24 @@ const dbPassword =
 const dbHost = process.env.DB_HOST ? String(process.env.DB_HOST) : "localhost";
 const dbPort = process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432;
 
+const poolMax = Math.max(1, Number(process.env.DB_POOL_MAX) || 20);
+const configuredPoolMin = Math.min(
+  poolMax,
+  Math.max(0, Number(process.env.DB_POOL_MIN ?? 5)),
+);
+// Keep idle test pools at 0 so unit test suites exit cleanly without lingering sockets.
+const poolMin = process.env.NODE_ENV === "test" ? 0 : configuredPoolMin;
+
 const sequelize = new Sequelize(dbName, dbUser, dbPassword, {
   host: dbHost,
   port: dbPort,
   dialect: "postgres",
   logging: false,
   pool: {
-    max: 20,
-    min: 5,
-    acquire: 30000,
-    idle: 10000,
+    max: poolMax,
+    min: poolMin,
+    acquire: Number(process.env.DB_POOL_ACQUIRE_MS) || 30000,
+    idle: Number(process.env.DB_POOL_IDLE_MS) || 10000,
     evict: 1000,
   },
 
@@ -38,17 +46,9 @@ const sequelize = new Sequelize(dbName, dbUser, dbPassword, {
 
     connectTimeout: 10000,
 
-    statement_timeout: 30000,
+    statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS) || 30000,
     idle_in_transaction_session_timeout: 60000
   },
-});
-
-sequelize.authenticate().catch(err => {
-  console.error("FATAL: Database authentication failed. Check credentials.");
-  console.error(err.message);
-  if (process.env.NODE_ENV !== "test") {
-    process.exit(1);
-  }
 });
 
 export default sequelize;

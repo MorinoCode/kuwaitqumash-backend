@@ -1,11 +1,25 @@
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import User from '../domains/auth/user.model.js';
-import { cacheGet } from '../config/redis.js';
+import { cacheGet, cacheSet, cacheDelete } from '../config/redis.js';
 import logger from '../utils/logger.js';
 
 const getJwtRevocationKey = (decoded, rawToken) =>
   `revoked:jwt:${decoded?.jti || crypto.createHash('sha256').update(String(rawToken)).digest('hex')}`;
+
+const getAuthUserCacheKey = (schema, userId) => `auth:user:${schema}:${userId}`;
+
+const getAuthUserCacheTtl = () => {
+  if (process.env.AUTH_USER_CACHE_TTL_SECONDS !== undefined) {
+    return Math.max(0, Number(process.env.AUTH_USER_CACHE_TTL_SECONDS) || 0);
+  }
+  return process.env.NODE_ENV === 'test' ? 0 : 45;
+};
+
+export const invalidateAuthUserCache = async (schema, userId) => {
+  if (!schema || !userId) return;
+  await cacheDelete(getAuthUserCacheKey(schema, userId));
+};
 
 export const protect = async (req, res, next) => {
   try {
@@ -35,14 +49,30 @@ export const protect = async (req, res, next) => {
       return res.status(401).json({ message: 'Not authorized for this store.' });
     }
 
-    const revoked = await cacheGet(getJwtRevocationKey(decoded, token));
+    const cacheTtl = getAuthUserCacheTtl();
+    const userCacheKey = getAuthUserCacheKey(req.tenant.db_schema, decoded.id);
+
+    const [revoked, cachedUser] = await Promise.all([
+      cacheGet(getJwtRevocationKey(decoded, token)),
+      cacheTtl > 0 ? cacheGet(userCacheKey) : Promise.resolve(null),
+    ]);
+
     if (revoked) {
       return res.status(401).json({ message: 'Session has been revoked.' });
     }
 
-    const user = await User.schema(req.tenant.db_schema).findByPk(decoded.id, {
-      attributes: { exclude: ['password'] }
-    });
+    let user = cachedUser;
+    if (!user) {
+      const dbUser = await User.schema(req.tenant.db_schema).findByPk(decoded.id, {
+        attributes: { exclude: ['password'] }
+      });
+      if (dbUser) {
+        user = typeof dbUser.toJSON === 'function' ? dbUser.toJSON() : dbUser;
+        if (cacheTtl > 0) {
+          await cacheSet(userCacheKey, user, cacheTtl);
+        }
+      }
+    }
 
     if (!user) {
       return res.status(401).json({ message: 'User not found or access revoked.' });

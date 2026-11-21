@@ -69,6 +69,11 @@ const getIndexDefinitions = () => [
     columns: ["customer_id", "created_at"],
   },
   {
+    name: "idx_invoices_created_by_status_created",
+    table: "invoices",
+    columns: ["created_by", "status", "created_at"],
+  },
+  {
     name: "idx_invoice_items_invoice_inventory",
     table: "invoice_items",
     columns: ["invoice_id", "inventory_item_id"],
@@ -106,7 +111,78 @@ const getIndexDefinitions = () => [
 ];
 
 const getSearchIndexDefinitions = () => [
-
+  // GIN trigram indexes accelerate case-insensitive substring ILIKE '%term%' searches
+  {
+    name: "idx_inventory_item_name_trgm",
+    table: "inventory_items",
+    column: "item_name",
+    using: 'gin ("item_name" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_inventory_item_name_ar_trgm",
+    table: "inventory_items",
+    column: "item_name_ar",
+    using: 'gin ("item_name_ar" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_inventory_barcode_trgm",
+    table: "inventory_items",
+    column: "barcode",
+    using: 'gin ("barcode" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_inventory_description_trgm",
+    table: "inventory_items",
+    column: "description",
+    using: 'gin ("description" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_invoices_invoice_number_trgm",
+    table: "invoices",
+    column: "invoice_number",
+    using: 'gin ("invoice_number" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_customers_full_name_trgm",
+    table: "customers",
+    column: "full_name",
+    using: 'gin ("full_name" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_customers_phone_trgm",
+    table: "customers",
+    column: "phone",
+    using: 'gin ("phone" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_customers_address_trgm",
+    table: "customers",
+    column: "address",
+    using: 'gin ("address" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_refunds_refund_number_trgm",
+    table: "refunds",
+    column: "refund_number",
+    using: 'gin ("refund_number" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  {
+    name: "idx_refunds_credit_note_number_trgm",
+    table: "refunds",
+    column: "credit_note_number",
+    using: 'gin ("credit_note_number" public.gin_trgm_ops)',
+    requiresTrgm: true,
+  },
+  // Prefix B-Tree text_pattern_ops indexes as lightweight fallback
   {
     name: "idx_inventory_item_name_search",
     table: "inventory_items",
@@ -131,14 +207,12 @@ const getSearchIndexDefinitions = () => [
     column: "description",
     using: 'btree("description" text_pattern_ops)',
   },
-
   {
     name: "idx_invoices_invoice_number_search",
     table: "invoices",
     column: "invoice_number",
     using: 'btree("invoice_number" text_pattern_ops)',
   },
-
   {
     name: "idx_customers_full_name_search",
     table: "customers",
@@ -151,7 +225,38 @@ const getSearchIndexDefinitions = () => [
     column: "phone",
     using: 'btree("phone" text_pattern_ops)',
   },
+  {
+    name: "idx_customers_address_search",
+    table: "customers",
+    column: "address",
+    using: 'btree("address" text_pattern_ops)',
+  },
+  {
+    name: "idx_refunds_refund_number_search",
+    table: "refunds",
+    column: "refund_number",
+    using: 'btree("refund_number" text_pattern_ops)',
+  },
+  {
+    name: "idx_refunds_credit_note_number_search",
+    table: "refunds",
+    column: "credit_note_number",
+    using: 'btree("credit_note_number" text_pattern_ops)',
+  },
 ];
+
+export const ensurePgTrgmExtension = async () => {
+  try {
+    await sequelize.query("CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public;");
+    return true;
+  } catch (error) {
+    logger.warn("Could not enable pg_trgm extension (trigram indexes will be skipped)", {
+      component: "index-helper",
+      error: error?.message,
+    });
+    return false;
+  }
+};
 
 export const createIndexesForSchema = async (
   schemaName,
@@ -297,7 +402,10 @@ export const createSearchIndexesForSchema = async (schemaName) => {
     throw new Error(`Invalid schema name: ${schemaName}`);
   }
 
-  const indexDefinitions = getSearchIndexDefinitions();
+  const hasTrgm = await ensurePgTrgmExtension();
+  const indexDefinitions = getSearchIndexDefinitions().filter(
+    (idx) => !idx.requiresTrgm || hasTrgm,
+  );
   const createdIndexes = [];
   const skippedIndexes = [];
   const failedIndexes = [];

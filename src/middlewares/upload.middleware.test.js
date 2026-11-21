@@ -8,7 +8,7 @@ const tempDir = "public/temp";
 
 test("validateImageContent: passes cleanly when no files are uploaded", async () => {
   let nextCalled = false;
-  validateImageContent({}, {}, () => {
+  await validateImageContent({}, {}, () => {
     nextCalled = true;
   });
   assert.equal(nextCalled, true);
@@ -47,7 +47,7 @@ test("validateImageContent: unlinks ALL files in request if one is invalid", asy
     },
   };
 
-  validateImageContent(req, res, () => {
+  await validateImageContent(req, res, () => {
     assert.fail("next() should not be called when a file has invalid content");
   });
 
@@ -57,5 +57,34 @@ test("validateImageContent: unlinks ALL files in request if one is invalid", asy
   // CRITICAL CHECK (Bug #10): BOTH files must be unlinked from temp, not just the failing one
   assert.equal(fs.existsSync(file1Path), false, "Valid file must be unlinked to prevent temp leakage");
   assert.equal(fs.existsSync(file2Path), false, "Invalid file must be unlinked");
+});
+
+test("validateImageContent: validates valid WebP header asynchronously", async () => {
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+
+  const webpPath = path.join(tempDir, `test-valid-${Date.now()}.webp`);
+  const webpHeader = Buffer.from([
+    0x52, 0x49, 0x46, 0x46, // RIFF
+    0x24, 0x00, 0x00, 0x00,
+    0x57, 0x45, 0x42, 0x50, // WEBP
+    0x56, 0x50, 0x38, 0x20,
+  ]);
+  fs.writeFileSync(webpPath, webpHeader);
+
+  let nextCalled = false;
+  try {
+    await validateImageContent(
+      { file: { path: webpPath, mimetype: "image/webp" } },
+      {},
+      () => {
+        nextCalled = true;
+      },
+    );
+    assert.equal(nextCalled, true);
+  } finally {
+    if (fs.existsSync(webpPath)) fs.unlinkSync(webpPath);
+  }
 });
 

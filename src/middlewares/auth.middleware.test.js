@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import jwt from "jsonwebtoken";
 import User from "../domains/auth/user.model.js";
-import { protect, restrictTo } from "./auth.middleware.js";
+import { protect, restrictTo, invalidateAuthUserCache } from "./auth.middleware.js";
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
 
@@ -164,4 +164,29 @@ test("restrictTo blocks roles outside the list", () => {
   const res = makeRes();
   restrictTo("store_owner")({ user: { role: "sales_man" } }, res, () => {});
   assert.equal(res.statusCode, 403);
+});
+
+test("protect caches user lookups when TTL > 0 and respects invalidateAuthUserCache", async (t) => {
+  const prevTtl = process.env.AUTH_USER_CACHE_TTL_SECONDS;
+  process.env.AUTH_USER_CACHE_TTL_SECONDS = "30";
+  t.after(async () => {
+    if (prevTtl === undefined) delete process.env.AUTH_USER_CACHE_TTL_SECONDS;
+    else process.env.AUTH_USER_CACHE_TTL_SECONDS = prevTtl;
+    await invalidateAuthUserCache(tenant.db_schema, 999);
+  });
+
+  let dbHits = 0;
+  await withUserLookup(t, async () => {
+    dbHits += 1;
+    return { id: 999, is_active: true, role: "sales_man", token_version: 0 };
+  });
+
+  const authHeader = `Bearer ${tokenFor({ id: 999 })}`;
+  await protect({ tenant, headers: { authorization: authHeader }, cookies: {} }, makeRes(), () => {});
+  await protect({ tenant, headers: { authorization: authHeader }, cookies: {} }, makeRes(), () => {});
+  assert.equal(dbHits, 1, "second request should be served from auth user cache");
+
+  await invalidateAuthUserCache(tenant.db_schema, 999);
+  await protect({ tenant, headers: { authorization: authHeader }, cookies: {} }, makeRes(), () => {});
+  assert.equal(dbHits, 2, "invalidating cache should trigger a fresh DB lookup");
 });
