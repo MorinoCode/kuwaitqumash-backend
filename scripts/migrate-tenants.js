@@ -2,6 +2,11 @@ import "../src/config/env.js";
 import sequelize from "../src/config/database.js";
 import logger from "../src/utils/logger.js";
 import { ensureTenantMigrations } from "../src/utils/schema.manager.js";
+import {
+  ensurePgTrgmExtension,
+  createIndexesForSchema,
+  createSearchIndexesForSchema,
+} from "../src/utils/index-helper.js";
 
 import Tenant from "../src/domains/platform/tenant.model.js";
 import ContactMessage from "../src/domains/platform/contact-message.model.js";
@@ -65,6 +70,8 @@ const run = async () => {
   await WhatsAppConfig.sync({ alter: false });
   await ContactMessage.sync({ alter: false });
 
+  await ensurePgTrgmExtension();
+
   const tenants = await Tenant.findAll({ order: [["id", "ASC"]] });
   logger.info("Running tenant migrations", {
     component: "migrate-tenants",
@@ -107,6 +114,17 @@ const run = async () => {
     }
 
     await ensureTenantMigrations(schema);
+
+    const idxRes = await createIndexesForSchema(schema);
+    const searchIdxRes = await createSearchIndexesForSchema(schema);
+    logger.info("Tenant indexes verified", {
+      component: "migrate-tenants",
+      schema,
+      indexesCreated: idxRes.created,
+      indexesFailed: idxRes.failed,
+      searchIndexesCreated: searchIdxRes.created,
+      searchIndexesFailed: searchIdxRes.failed,
+    });
   }
 
   logger.info("All tenant migrations completed successfully.", {

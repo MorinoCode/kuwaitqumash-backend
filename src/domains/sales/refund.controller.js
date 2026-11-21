@@ -338,8 +338,11 @@ export const createRefund = async (req, res) => {
 
     const refundNumber = `REF-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    const lockKey = 1000;
-    await sequelize.query('SELECT pg_advisory_xact_lock(:key)', { replacements: { key: lockKey }, transaction: t });
+    // Scope advisory lock per-tenant so concurrent refunds in different stores never block each other
+    await sequelize.query("SELECT pg_advisory_xact_lock(hashtext(:lockKey))", {
+      replacements: { lockKey: `refund_cn:${schema}` },
+      transaction: t,
+    });
 
     const year = new Date().getFullYear();
     const prefix = `CN-${year}-`;
@@ -368,24 +371,40 @@ export const createRefund = async (req, res) => {
       { transaction: t }
     );
 
-    for (const it of validatedItems) {
-      await RefundItem.schema(schema).create(
-        {
-          refund_id: refund.id,
-          invoice_item_id: it.invoice_item_id,
-          inventory_item_id: it.inventory_item_id,
-          meters: it.meters,
-          quantity_refunded: it.quantity_refunded,
-          amount_refunded: it.amount_refunded,
-        },
-        { transaction: t }
-      );
+    await RefundItem.schema(schema).bulkCreate(
+      validatedItems.map((it) => ({
+        refund_id: refund.id,
+        invoice_item_id: it.invoice_item_id,
+        inventory_item_id: it.inventory_item_id,
+        meters: it.meters,
+        quantity_refunded: it.quantity_refunded,
+        amount_refunded: it.amount_refunded,
+      })),
+      { transaction: t },
+    );
 
-      const invItem = await InventoryItem.schema(schema).findByPk(it.inventory_item_id, {
+    // Lock all affected inventory items in deterministic ascending ID order to avoid deadlocks and N+1 lookups
+    const uniqueInventoryIds = [
+      ...new Set(
+        validatedItems
+          .map((it) => Number(it.inventory_item_id))
+          .filter((invId) => Number.isInteger(invId) && invId > 0),
+      ),
+    ].sort((a, b) => a - b);
+
+    if (uniqueInventoryIds.length > 0) {
+      const lockedInvItems = await InventoryItem.schema(schema).findAll({
+        where: { id: { [Op.in]: uniqueInventoryIds } },
+        order: [["id", "ASC"]],
         transaction: t,
         lock: t.LOCK.UPDATE,
       });
-      if (invItem) {
+      const invItemMap = new Map(lockedInvItems.map((row) => [Number(row.id), row]));
+      const touchedInvItems = new Set();
+
+      for (const it of validatedItems) {
+        const invItem = invItemMap.get(Number(it.inventory_item_id));
+        if (!invItem) continue;
         const restored = applyRefundToStock(
           invItem,
           it.meters,
@@ -399,21 +418,23 @@ export const createRefund = async (req, res) => {
         if (shouldRearmAlert(invItem)) {
           invItem.alert_dismissed_at = null;
         }
-        await invItem.save({ transaction: t });
+        touchedInvItems.add(invItem);
       }
-    }
 
-    for (const p of payments) {
-      await RefundPayment.schema(schema).create(
-        {
-          refund_id: refund.id,
-          method: p.method,
-          amount: parseFloat(p.amount),
-          reference_number: p.reference_number || null,
-        },
-        { transaction: t }
+      await Promise.all(
+        [...touchedInvItems].map((invItem) => invItem.save({ transaction: t })),
       );
     }
+
+    await RefundPayment.schema(schema).bulkCreate(
+      payments.map((p) => ({
+        refund_id: refund.id,
+        method: p.method,
+        amount: parseFloat(p.amount),
+        reference_number: p.reference_number || null,
+      })),
+      { transaction: t },
+    );
 
     const [sumResult] = await sequelize.query(
       `SELECT COALESCE(SUM(total_amount), 0)::float AS total FROM "${schema}".refunds WHERE invoice_id = :invoiceId`,

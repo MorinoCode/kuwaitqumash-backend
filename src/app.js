@@ -40,8 +40,9 @@ import { requestId } from "./middlewares/requestId.middleware.js";
 import { resolveTenant } from "./middlewares/tenant.middleware.js";
 import { protect } from "./middlewares/auth.middleware.js";
 import sanitizeInput from "./middlewares/sanitize.middleware.js";
-import { initSocket } from "./config/socket.js";
+import { initSocket, closeSocket } from "./config/socket.js";
 import { closeWhatsAppQueues } from "./queues/whatsapp.queue.js";
+import { RedisRateLimitStore } from "./utils/redisRateLimitStore.js";
 
 import adminRoutes from "./domains/admin/admin.routes.js";
 import platformRoutes from "./domains/platform/platform.routes.js";
@@ -138,9 +139,12 @@ app.use(
 );
 app.use(requestId);
 
+const apiRateLimitStore = new RedisRateLimitStore({ prefix: "rl:api:" });
+
 const apiLimiter = rateLimit({
   windowMs: Number(process.env.API_RATE_LIMIT_WINDOW_MS) || 1 * 60 * 1000,
   max: Number(process.env.API_RATE_LIMIT_MAX) || 500,
+  store: apiRateLimitStore,
   message: {
     success: false,
     message: "Too many requests. Please try again later.",
@@ -296,6 +300,8 @@ const gracefulShutdown = async (signal) => {
         }
       });
     });
+    apiRateLimitStore.shutdown();
+    await closeSocket();
     await closeWhatsAppQueues();
     await sequelize.close();
     logger.info("Database connection closed", { component: "shutdown" });

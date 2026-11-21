@@ -84,15 +84,6 @@ const UNITS = ['meter', 'roll'];
 const ORIGINS = ['Italy', 'Turkey', 'India', 'Kuwait', 'UAE', 'China', 'Korea'];
 const PAYMENT_METHODS = ['Cash', 'K-Net', 'Visa/Master', 'Link', 'Cheque'];
 const CUSTOMER_TYPES = ['Regular', 'VIP', 'Wholesaler'];
-const NATIONALITIES = [
-  'Kuwaiti',
-  'Egyptian',
-  'Lebanese',
-  'Syrian',
-  'Indian',
-  'Pakistani',
-  'Filipino'
-];
 
 const BASE_COST_PER_METER = {
   Cotton: 2.5,

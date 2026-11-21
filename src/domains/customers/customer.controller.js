@@ -2,7 +2,6 @@ import Customer from "./customer.model.js";
 import Invoice from "../sales/invoice.model.js";
 import sequelize from "../../config/database.js";
 import InvoiceItem from "../sales/invoice-item.model.js";
-import InventoryItem from "../inventory/item.model.js";
 import { Op } from "sequelize";
 import { normalizeToLatinDigits } from "../../utils/normalizeNumbers.js";
 import logger from "../../utils/logger.js";
@@ -82,7 +81,7 @@ export const getCustomers = async (req, res) => {
     if (search) {
       whereClause[Op.or] = [
         { full_name: { [Op.iLike]: `%${search}%` } },
-        { phone: { [Op.like]: `%${search}%` } },
+        { phone: { [Op.iLike]: `%${search}%` } },
         { address: { [Op.iLike]: `%${search}%` } },
       ];
     }
@@ -92,27 +91,28 @@ export const getCustomers = async (req, res) => {
     const limitNum = Math.min(parseInt(limit, 10) || 20, MAX_LIMIT);
     const offset = (pageNum - 1) * limitNum;
 
-    const totalCount = await Customer.schema(schema).count({
-      where: whereClause,
-    });
-
-    const customers = await Customer.schema(schema).findAll({
-      where: whereClause,
-      attributes: [
-        "id",
-        "full_name",
-        "phone",
-        "gender",
-        "address",
-        "type",
-        "notes",
-        "branch_id",
-        "created_at",
-      ],
-      order: [["createdAt", "DESC"]],
-      limit: limitNum,
-      offset: offset,
-    });
+    const [totalCount, customers] = await Promise.all([
+      Customer.schema(schema).count({
+        where: whereClause,
+      }),
+      Customer.schema(schema).findAll({
+        where: whereClause,
+        attributes: [
+          "id",
+          "full_name",
+          "phone",
+          "gender",
+          "address",
+          "type",
+          "notes",
+          "branch_id",
+          "created_at",
+        ],
+        order: [["createdAt", "DESC"]],
+        limit: limitNum,
+        offset: offset,
+      }),
+    ]);
 
     const totalPages = Math.ceil(totalCount / limitNum);
 
@@ -226,7 +226,16 @@ export const getCustomerAnalytics = async (req, res) => {
     const schema = req.tenant.db_schema;
     const { id } = req.params;
 
-    const customer = await Customer.schema(schema).findByPk(id);
+    if (!/^[a-zA-Z0-9_]+$/.test(schema)) {
+      return res.status(400).json({ message: "Invalid tenant schema" });
+    }
+
+    const customerId = parseInt(id, 10);
+    if (!Number.isInteger(customerId) || customerId <= 0) {
+      return res.status(400).json({ message: "Invalid customer ID" });
+    }
+
+    const customer = await Customer.schema(schema).findByPk(customerId);
 
     if (!customer)
       return res.status(404).json({ message: "Customer not found" });
@@ -238,28 +247,154 @@ export const getCustomerAnalytics = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    const invoices = await Invoice.schema(schema).findAll({
-      where: {
-        customer_id: id,
-        status: { [Op.in]: ["Paid", "Partially Refunded"] },
-      },
-      include: [
-        {
-          model: InvoiceItem.schema(schema),
-          as: "items",
-          include: [
-            {
-              model: InventoryItem.schema(schema),
-              as: "inventory_item",
-              attributes: ["fabric_type", "pattern"],
-            },
-          ],
-        },
-      ],
-      order: [["createdAt", "ASC"]],
-    });
+    // Aggregate customer analytics directly inside PostgreSQL in Kuwait timezone
+    // (net of Completed refunds) to avoid loading full purchase history into RAM.
+    const replacements = { customerId };
+    const queryOpts = { replacements, type: sequelize.QueryTypes.SELECT };
 
-    if (invoices.length === 0) {
+    const [
+      [summaryRow = {}],
+      [refundRow = {}],
+      [itemRow = {}],
+      prefRows,
+      [bestDayRow],
+      [bestMonthRow],
+      recentMonthRows,
+    ] = await Promise.all([
+      sequelize.query(
+        `
+        SELECT
+          COUNT(inv.id)::int AS purchase_frequency,
+          COALESCE(SUM(inv.total_amount), 0) AS gross_spent,
+          MIN(inv.created_at) AS first_purchase,
+          MAX(inv.created_at) AS last_purchase,
+          COUNT(*) FILTER (
+            WHERE EXTRACT(MONTH FROM (inv.created_at AT TIME ZONE 'Asia/Kuwait'))::int IN (11, 12, 1)
+          )::int AS holiday_purchases,
+          CASE
+            WHEN COUNT(inv.id) > 1
+            THEN EXTRACT(EPOCH FROM (MAX(inv.created_at) - MIN(inv.created_at))) / 86400.0 / (COUNT(inv.id) - 1)
+            ELSE 0
+          END AS avg_days_between_purchases
+        FROM "${schema}".invoices inv
+        WHERE inv.customer_id = :customerId
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        `,
+        queryOpts,
+      ),
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(r.total_amount), 0) AS refunded_amount,
+          COALESCE((
+            SELECT SUM(COALESCE(ri.quantity_refunded, 1))
+            FROM "${schema}".refund_items ri
+            INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+            INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+            WHERE inv2.customer_id = :customerId
+              AND inv2.status = 'Partially Refunded'
+              AND r2.status = 'Completed'
+          ), 0)::int AS refunded_items,
+          COALESCE((
+            SELECT SUM(COALESCE(ri.meters, 0) * COALESCE(ri.quantity_refunded, 1))
+            FROM "${schema}".refund_items ri
+            INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+            INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+            WHERE inv2.customer_id = :customerId
+              AND inv2.status = 'Partially Refunded'
+              AND r2.status = 'Completed'
+          ), 0) AS refunded_meters,
+          COALESCE((
+            SELECT SUM(COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(ri.meters, 0) * COALESCE(ri.quantity_refunded, 1))
+            FROM "${schema}".refund_items ri
+            INNER JOIN "${schema}".refunds r2 ON ri.refund_id = r2.id
+            INNER JOIN "${schema}".invoices inv2 ON r2.invoice_id = inv2.id
+            LEFT JOIN "${schema}".invoice_items it ON ri.invoice_item_id = it.id
+            WHERE inv2.customer_id = :customerId
+              AND inv2.status = 'Partially Refunded'
+              AND r2.status = 'Completed'
+          ), 0) AS refunded_cost
+        FROM "${schema}".refunds r
+        INNER JOIN "${schema}".invoices inv ON r.invoice_id = inv.id
+        WHERE inv.customer_id = :customerId
+          AND inv.status = 'Partially Refunded'
+          AND r.status = 'Completed'
+        `,
+        queryOpts,
+      ),
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(COALESCE(it.quantity, 1)), 0)::int AS total_items,
+          COALESCE(SUM(COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)), 0) AS total_meters,
+          COALESCE(SUM(COALESCE(it.total_price, 0)), 0) AS gross_item_sell,
+          COALESCE(SUM(COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)), 0) AS gross_cost
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON inv.id = it.invoice_id
+        WHERE inv.customer_id = :customerId
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        `,
+        queryOpts,
+      ),
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(NULLIF(it.fabric_type, ''), NULLIF(ii.fabric_type, ''), 'Other') AS fabric_type,
+          ii.pattern AS pattern,
+          COALESCE(SUM(COALESCE(it.quantity, 1)), 0)::int AS total_qty
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON inv.id = it.invoice_id
+        LEFT JOIN "${schema}".inventory_items ii ON ii.id = it.inventory_item_id
+        WHERE inv.customer_id = :customerId
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY 1, 2
+        `,
+        queryOpts,
+      ),
+      sequelize.query(
+        `
+        SELECT
+          EXTRACT(DOW FROM (inv.created_at AT TIME ZONE 'Asia/Kuwait'))::int AS day_of_week,
+          COUNT(*)::int AS cnt
+        FROM "${schema}".invoices inv
+        WHERE inv.customer_id = :customerId
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY 1
+        ORDER BY cnt DESC, day_of_week ASC
+        LIMIT 1
+        `,
+        queryOpts,
+      ),
+      sequelize.query(
+        `
+        SELECT
+          (EXTRACT(MONTH FROM (inv.created_at AT TIME ZONE 'Asia/Kuwait'))::int - 1) AS month_idx,
+          COUNT(*)::int AS cnt
+        FROM "${schema}".invoices inv
+        WHERE inv.customer_id = :customerId
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY 1
+        ORDER BY cnt DESC, month_idx ASC
+        LIMIT 1
+        `,
+        queryOpts,
+      ),
+      sequelize.query(
+        `
+        SELECT
+          (EXTRACT(MONTH FROM (inv.created_at AT TIME ZONE 'Asia/Kuwait'))::int - 1) AS month_idx
+        FROM "${schema}".invoices inv
+        WHERE inv.customer_id = :customerId
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        ORDER BY inv.created_at DESC
+        LIMIT 3
+        `,
+        queryOpts,
+      ),
+    ]);
+
+    const purchaseFrequency = Number(summaryRow.purchase_frequency || 0);
+    if (purchaseFrequency === 0) {
       return res.json({
         success: true,
         data: {
@@ -273,79 +408,51 @@ export const getCustomerAnalytics = async (req, res) => {
       });
     }
 
-    let totalSpent = 0;
-    let totalItems = 0;
-    let totalMeters = 0;
-    let totalProfit = 0;
+    const grossSpent = parseFloat(summaryRow.gross_spent || 0);
+    const refundedAmount = parseFloat(refundRow.refunded_amount || 0);
+    const totalSpent = Math.max(0, grossSpent - refundedAmount);
+
+    const grossItems = Number(itemRow.total_items || 0);
+    const refundedItems = Number(refundRow.refunded_items || 0);
+    const totalItems = Math.max(0, grossItems - refundedItems);
+
+    const grossMeters = parseFloat(itemRow.total_meters || 0);
+    const refundedMeters = parseFloat(refundRow.refunded_meters || 0);
+    const totalMeters = Math.max(0, grossMeters - refundedMeters);
+
+    const grossItemSell = parseFloat(itemRow.gross_item_sell || 0);
+    const grossCost = parseFloat(itemRow.gross_cost || 0);
+    const refundedCost = parseFloat(refundRow.refunded_cost || 0);
+    const netCost = Math.max(0, grossCost - refundedCost);
+    const totalProfit = grossItemSell - refundedAmount - netCost;
+
     const fabricCount = {};
     const patternCount = {};
-    const purchaseDates = [];
-    const purchaseAmounts = [];
-    const dayOfWeekCount = {};
-    const monthCount = {};
-
-    invoices.forEach((inv) => {
-      totalSpent += parseFloat(inv.total_amount || 0);
-      purchaseAmounts.push(parseFloat(inv.total_amount || 0));
-      purchaseDates.push(new Date(inv.createdAt));
-
-      const dayOfWeek = new Date(inv.createdAt).getDay();
-      dayOfWeekCount[dayOfWeek] = (dayOfWeekCount[dayOfWeek] || 0) + 1;
-
-      const month = new Date(inv.createdAt).getMonth();
-      monthCount[month] = (monthCount[month] || 0) + 1;
-
-      (inv.items || []).forEach((item) => {
-        const qty = parseInt(item.quantity, 10) || 1;
-        const itemMeters = parseFloat(item.meters || 0);
-        totalItems += qty;
-        totalMeters += itemMeters * qty;
-
-        const fabricType =
-          item.fabric_type || item.inventory_item?.fabric_type || "Other";
-        if (fabricType) {
-          fabricCount[fabricType] = (fabricCount[fabricType] || 0) + qty;
-        }
-
-        const pattern = item.inventory_item?.pattern;
-        if (pattern) {
-          patternCount[pattern] = (patternCount[pattern] || 0) + qty;
-        }
-
-        const costPerMeter = parseFloat(item.cost_per_meter_snapshot || 0);
-        const sellPrice = parseFloat(item.total_price || 0);
-        totalProfit += sellPrice - costPerMeter * itemMeters * qty;
-      });
-    });
-
-    const preferredFabric = Object.keys(fabricCount).reduce(
-      (a, b) => (fabricCount[a] > fabricCount[b] ? a : b),
-      Object.keys(fabricCount)[0] || null,
-    );
-
-    const preferredPattern = Object.keys(patternCount).reduce(
-      (a, b) => (patternCount[a] > patternCount[b] ? a : b),
-      Object.keys(patternCount)[0] || null,
-    );
-
-    const avgPurchaseValue = totalSpent / invoices.length;
-
-    let avgDaysBetweenPurchases = 0;
-    if (purchaseDates.length > 1) {
-      const daysBetween = [];
-      for (let i = 1; i < purchaseDates.length; i++) {
-        const diff =
-          (purchaseDates[i] - purchaseDates[i - 1]) / (1000 * 60 * 60 * 24);
-        daysBetween.push(diff);
+    for (const row of prefRows) {
+      const qty = Number(row.total_qty || 0);
+      if (row.fabric_type) {
+        fabricCount[row.fabric_type] = (fabricCount[row.fabric_type] || 0) + qty;
       }
-      avgDaysBetweenPurchases =
-        daysBetween.reduce((a, b) => a + b, 0) / daysBetween.length;
+      if (row.pattern) {
+        patternCount[row.pattern] = (patternCount[row.pattern] || 0) + qty;
+      }
     }
 
-    const bestDayOfWeek = Object.keys(dayOfWeekCount).reduce(
-      (a, b) => (dayOfWeekCount[a] > dayOfWeekCount[b] ? a : b),
-      Object.keys(dayOfWeekCount)[0] || null,
+    const fabricKeys = Object.keys(fabricCount);
+    const preferredFabric = fabricKeys.length
+      ? fabricKeys.reduce((a, b) => (fabricCount[a] > fabricCount[b] ? a : b))
+      : null;
+
+    const patternKeys = Object.keys(patternCount);
+    const preferredPattern = patternKeys.length
+      ? patternKeys.reduce((a, b) => (patternCount[a] > patternCount[b] ? a : b))
+      : null;
+
+    const avgPurchaseValue = totalSpent / purchaseFrequency;
+    const avgDaysBetweenPurchases = parseFloat(
+      summaryRow.avg_days_between_purchases || 0,
     );
+
     const dayNames = [
       "Sunday",
       "Monday",
@@ -355,11 +462,6 @@ export const getCustomerAnalytics = async (req, res) => {
       "Friday",
       "Saturday",
     ];
-
-    const bestMonth = Object.keys(monthCount).reduce(
-      (a, b) => (monthCount[a] > monthCount[b] ? a : b),
-      Object.keys(monthCount)[0] || null,
-    );
     const monthNames = [
       "January",
       "February",
@@ -375,18 +477,23 @@ export const getCustomerAnalytics = async (req, res) => {
       "December",
     ];
 
+    const bestDayOfWeek =
+      bestDayRow?.day_of_week != null ? Number(bestDayRow.day_of_week) : null;
+    const bestMonth =
+      bestMonthRow?.month_idx != null ? Number(bestMonthRow.month_idx) : null;
+
     let customerType = "new_customer";
-    if (invoices.length >= 10) {
+    if (purchaseFrequency >= 10) {
       customerType = "vip_customer";
-    } else if (invoices.length >= 5) {
+    } else if (purchaseFrequency >= 5) {
       customerType = "regular_customer";
-    } else if (invoices.length >= 2) {
+    } else if (purchaseFrequency >= 2) {
       customerType = "returning_customer";
     }
 
     const insights = [];
 
-    if (invoices.length >= 3) {
+    if (purchaseFrequency >= 3) {
       insights.push("frequent_buyer");
     }
 
@@ -406,19 +513,15 @@ export const getCustomerAnalytics = async (req, res) => {
       insights.push("profitable_customer");
     }
 
-    const recentMonths = purchaseDates
-      .slice(-3)
-      .map((d) => new Date(d).getMonth());
-    const uniqueMonths = [...new Set(recentMonths)];
-    if (uniqueMonths.length === 3) {
+    const uniqueRecentMonths = new Set(
+      recentMonthRows.map((r) => Number(r.month_idx)),
+    );
+    if (uniqueRecentMonths.size === 3) {
       insights.push("consistent_buyer");
     }
 
-    const holidayMonths = [10, 11, 0];
-    const holidayPurchases = purchaseDates.filter((d) =>
-      holidayMonths.includes(new Date(d).getMonth()),
-    ).length;
-    if (holidayPurchases > purchaseDates.length * 0.4) {
+    const holidayPurchases = Number(summaryRow.holiday_purchases || 0);
+    if (holidayPurchases > purchaseFrequency * 0.4) {
       insights.push("holiday_shopper");
     }
 
@@ -429,7 +532,7 @@ export const getCustomerAnalytics = async (req, res) => {
           customer_type: customerType,
           insights: insights,
           preferences: {
-            preferred_fabric_type: preferredFabric ? preferredFabric : null,
+            preferred_fabric_type: preferredFabric || null,
             preferred_pattern: preferredPattern || null,
             fabric_distribution: fabricCount,
             pattern_distribution: patternCount,
@@ -441,14 +544,17 @@ export const getCustomerAnalytics = async (req, res) => {
             total_profit: totalProfit.toFixed(3),
             avg_purchase_value: avgPurchaseValue.toFixed(3),
             avg_days_between_purchases: Math.round(avgDaysBetweenPurchases),
-            best_buying_day: dayNames[bestDayOfWeek] || null,
-            best_buying_month: monthNames[bestMonth] || null,
-            purchase_frequency: invoices.length,
-            last_purchase:
-              purchaseDates.length > 0
-                ? purchaseDates[purchaseDates.length - 1]
-                : null,
-            first_purchase: purchaseDates.length > 0 ? purchaseDates[0] : null,
+            best_buying_day:
+              bestDayOfWeek !== null ? dayNames[bestDayOfWeek] || null : null,
+            best_buying_month:
+              bestMonth !== null ? monthNames[bestMonth] || null : null,
+            purchase_frequency: purchaseFrequency,
+            last_purchase: summaryRow.last_purchase
+              ? new Date(summaryRow.last_purchase)
+              : null,
+            first_purchase: summaryRow.first_purchase
+              ? new Date(summaryRow.first_purchase)
+              : null,
           },
         },
       },

@@ -6,13 +6,16 @@ import cron from "node-cron";
 import "../src/domains/associations.js";
 import Tenant from "../src/domains/platform/tenant.model.js";
 import Invoice from "../src/domains/sales/invoice.model.js";
-import InvoiceItem from "../src/domains/sales/invoice-item.model.js";
 import InventoryItem from "../src/domains/inventory/item.model.js";
 import User from "../src/domains/auth/user.model.js";
 import Branch from "../src/domains/store/branch.model.js";
 import Customer from "../src/domains/customers/customer.model.js";
 import WhatsappConfig from "../src/domains/platform/whatsapp.config.model.js";
 import { Op, Sequelize } from "sequelize";
+import {
+  startOfKuwaitDay,
+  daysAgoKuwaitStart,
+} from "../src/utils/kuwaitTime.js";
 
 const CACHE_TTL = {
   TODAY: 3600,
@@ -21,285 +24,249 @@ const CACHE_TTL = {
   LOW_STOCK: 3600,
 };
 
-const calculateProfit = (items) => {
-  let totalCost = 0;
-  items.forEach((item) => {
-    const meters = parseFloat(item.meters || 0);
-    const qty = parseInt(item.quantity, 10) || 1;
-    const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
-    totalCost += meters * qty * buyPrice;
-  });
-  return totalCost;
-};
-
 const aggregateOwnerDashboard = async (tenant) => {
   try {
     const schema = tenant.db_schema;
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const todayStart = startOfKuwaitDay(new Date());
+    const weekStart = daysAgoKuwaitStart(7);
+    const monthStart = daysAgoKuwaitStart(30);
 
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
+    const [
+      [periodTotals = {}],
+      [periodCost = {}],
+      [inventoryTotals = {}],
+      activeBranches,
+      whatsappConfig,
+      salesTrend7Days,
+      salesTrend30Days,
+      branchSales,
+      categoryFabricSales,
+      fabricSales,
+      topItemsRevenue,
+      topCustomers,
+      lowStockItems,
+    ] = await Promise.all([
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(inv.total_amount), 0) AS total_sales,
+          COALESCE(SUM(inv.total_meters), 0) AS total_meters,
+          COUNT(*)::int AS invoice_count
+        FROM "${schema}".invoices inv
+        WHERE inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        `,
+        {
+          replacements: { todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(
+            COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)
+          ), 0) AS total_cost
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        WHERE inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        `,
+        {
+          replacements: { todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(
+            COALESCE(length_m, 0) * COALESCE(cost_per_meter, 0) * COALESCE(quantity, 1)
+          ), 0) AS total_inventory_value
+        FROM "${schema}".inventory_items
+        WHERE status = 'In Stock'
+        `,
+        {
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      Branch.schema(schema).count(),
+      WhatsappConfig.findOne({
+        where: { tenant_slug: tenant.slug },
+      }),
+      Invoice.schema(schema).findAll({
+        where: {
+          createdAt: { [Op.gte]: weekStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
+        ],
+        group: [Sequelize.fn("date", Sequelize.col("created_at"))],
+        order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
+        raw: true,
+      }),
+      Invoice.schema(schema).findAll({
+        where: {
+          createdAt: { [Op.gte]: monthStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
+        ],
+        group: [Sequelize.fn("date", Sequelize.col("created_at"))],
+        order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
+        raw: true,
+      }),
+      Invoice.schema(schema).findAll({
+        where: {
+          createdAt: { [Op.gte]: todayStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          "branch_id",
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_sales"],
+        ],
+        include: [
+          { model: Branch.schema(schema), as: "branch", attributes: ["name"] },
+        ],
+        group: ["branch_id", "branch.id", "branch.name"],
+        raw: true,
+        nest: true,
+      }),
+      sequelize.query(
+        `
+        SELECT
+          CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
+          ii.pattern,
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          SUM(COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)) AS cost,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+        WHERE inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY it.fabric_type, ii.pattern
+        ORDER BY revenue DESC
+      `,
+        {
+          replacements: { todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        WHERE inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY it.fabric_type
+        ORDER BY it.fabric_type ASC
+      `,
+        {
+          replacements: { todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT
+          ii.id,
+          ii.item_name AS name,
+          ii.pattern,
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          SUM(COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)) AS cost,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+        WHERE inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
+        ORDER BY revenue DESC
+        LIMIT 5
+      `,
+        {
+          replacements: { todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      Invoice.schema(schema).findAll({
+        where: {
+          createdAt: { [Op.gte]: todayStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          "customer_id",
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_value"],
+        ],
+        include: [
+          {
+            model: Customer.schema(schema),
+            as: "customer",
+            attributes: ["full_name"],
+          },
+        ],
+        group: ["customer_id", "customer.id", "customer.full_name"],
+        order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
+        limit: 5,
+        raw: true,
+        nest: true,
+      }),
+      InventoryItem.schema(schema).findAll({
+        where: {
+          status: "In Stock",
+          quantity: { [Op.lte]: Sequelize.col("min_stock_level") },
+        },
+        attributes: [
+          "id",
+          "item_name",
+          "pattern",
+          "quantity",
+          "min_stock_level",
+        ],
+        limit: 20,
+      }),
+    ]);
 
-    const monthStart = new Date();
-    monthStart.setDate(monthStart.getDate() - 30);
-
-    const invoicesToday = await Invoice.schema(schema).findAll({
-      where: {
-        createdAt: { [Op.gte]: todayStart },
-        status: "Paid",
-      },
-      include: [{ model: InvoiceItem.schema(schema), as: "items" }],
-    });
-
-    let totalSalesToday = 0;
-    let totalMetersToday = 0;
-    let totalCostToday = 0;
-
-    invoicesToday.forEach((inv) => {
-      totalSalesToday += parseFloat(inv.total_amount || 0);
-      totalMetersToday += parseFloat(inv.total_meters || 0);
-      inv.items.forEach((item) => {
-        const meters = parseFloat(item.meters || 0);
-        const qty = parseInt(item.quantity, 10) || 1;
-        const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
-        totalCostToday += meters * qty * buyPrice;
-      });
-    });
-
+    const totalSalesToday = parseFloat(periodTotals.total_sales || 0);
+    const totalMetersToday = parseFloat(periodTotals.total_meters || 0);
+    const invoiceCountToday = parseInt(periodTotals.invoice_count || 0, 10);
+    const totalCostToday = parseFloat(periodCost.total_cost || 0);
     const netProfitToday = totalSalesToday - totalCostToday;
     const avgSaleValue =
-      invoicesToday.length > 0 ? totalSalesToday / invoicesToday.length : 0;
-
-    const inventoryItems = await InventoryItem.schema(schema).findAll({
-      where: { status: "In Stock" },
-      attributes: ["length_m", "cost_per_meter", "quantity"],
-    });
-
-    let totalInventoryValue = 0;
-    inventoryItems.forEach((item) => {
-      const value =
-        parseFloat(item.length_m || 0) *
-        parseFloat(item.cost_per_meter || 0) *
-        parseInt(item.quantity || 1);
-      totalInventoryValue += value;
-    });
-
-    const activeBranches = await Branch.schema(schema).count();
-
-    const whatsappConfig = await WhatsappConfig.findOne({
-      where: { tenant_slug: tenant.slug },
-    });
-
-    const salesTrend7Days = await Invoice.schema(schema).findAll({
-      where: {
-        createdAt: { [Op.gte]: weekStart },
-        status: "Paid",
-      },
-      attributes: [
-        [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
-      ],
-      group: [Sequelize.fn("date", Sequelize.col("created_at"))],
-      order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
-      raw: true,
-    });
-
-    const salesTrend30Days = await Invoice.schema(schema).findAll({
-      where: {
-        createdAt: { [Op.gte]: monthStart },
-        status: "Paid",
-      },
-      attributes: [
-        [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
-      ],
-      group: [Sequelize.fn("date", Sequelize.col("created_at"))],
-      order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
-      raw: true,
-    });
-
-    const branchSales = await Invoice.schema(schema).findAll({
-      where: {
-        createdAt: { [Op.gte]: todayStart },
-        status: "Paid",
-      },
-      attributes: [
-        "branch_id",
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_sales"],
-      ],
-      include: [
-        { model: Branch.schema(schema), as: "branch", attributes: ["name"] },
-      ],
-      group: ["branch_id", "branch.id", "branch.name"],
-      raw: true,
-      nest: true,
-    });
-
-    const categoryFabricSales = await sequelize.query(
-      `
-      SELECT
-        CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
-        ii.pattern,
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.fabric_type, ii.pattern
-      ORDER BY revenue DESC
-    `,
-      {
-        replacements: { todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
+      invoiceCountToday > 0 ? totalSalesToday / invoiceCountToday : 0;
+    const totalInventoryValue = parseFloat(
+      inventoryTotals.total_inventory_value || 0,
     );
 
-    const categoryFabricWithProfit = await Promise.all(
-      categoryFabricSales.map(async (item) => {
-        const items = await InvoiceItem.schema(schema).findAll({
-          include: [
-            {
-              model: Invoice.schema(schema),
-              where: {
-                createdAt: { [Op.gte]: todayStart },
-                status: "Paid",
-              },
-              attributes: [],
-            },
-            {
-              model: InventoryItem.schema(schema),
-              as: "inventory_item",
-              where: { pattern: item.pattern },
-              attributes: [],
-            },
-          ],
-          where: { fabric_type: item.fabric_type },
-          attributes: ["meters", "quantity", "cost_per_meter_snapshot"],
-        });
+    const categoryFabricWithProfit = categoryFabricSales.map((item) => ({
+      name: item.name,
+      pattern: item.pattern,
+      fabric_type: item.fabric_type,
+      revenue: parseFloat(item.revenue || 0),
+      profit: parseFloat(item.revenue || 0) - parseFloat(item.cost || 0),
+      quantity: parseInt(item.quantity || 0, 10),
+    }));
 
-        const cost = calculateProfit(items);
-        return {
-          name: item.name,
-          pattern: item.pattern,
-          fabric_type: item.fabric_type,
-          revenue: parseFloat(item.revenue || 0),
-          profit: parseFloat(item.revenue || 0) - cost,
-          quantity: parseInt(item.quantity || 0),
-        };
-      }),
-    );
-
-    const fabricSales = await sequelize.query(
-      `
-      SELECT
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      WHERE inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.fabric_type
-      ORDER BY it.fabric_type ASC
-    `,
-      {
-        replacements: { todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
-    );
-
-    const topItemsRevenue = await sequelize.query(
-      `
-      SELECT
-        ii.id,
-        ii.item_name AS name,
-        ii.pattern,
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
-      ORDER BY revenue DESC
-      LIMIT 5
-    `,
-      {
-        replacements: { todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
-    );
-
-    const topItemsWithProfit = await Promise.all(
-      topItemsRevenue.map(async (item) => {
-        const items = await InvoiceItem.schema(schema).findAll({
-          include: [
-            {
-              model: Invoice.schema(schema),
-              where: {
-                createdAt: { [Op.gte]: todayStart },
-                status: "Paid",
-              },
-              attributes: [],
-            },
-          ],
-          where: { inventory_item_id: item.id },
-          attributes: ["meters", "quantity", "cost_per_meter_snapshot"],
-        });
-
-        const cost = calculateProfit(items);
-        return {
-          id: item.id,
-          name: item.name,
-          pattern: item.pattern,
-          fabric_type: item.fabric_type,
-          revenue: parseFloat(item.revenue || 0),
-          profit: parseFloat(item.revenue || 0) - cost,
-          quantity: parseInt(item.quantity || 0),
-        };
-      }),
-    );
-
-    const topCustomers = await Invoice.schema(schema).findAll({
-      where: {
-        createdAt: { [Op.gte]: todayStart },
-        status: "Paid",
-      },
-      attributes: [
-        "customer_id",
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_value"],
-      ],
-      include: [
-        {
-          model: Customer.schema(schema),
-          as: "customer",
-          attributes: ["full_name"],
-        },
-      ],
-      group: ["customer_id", "customer.id", "customer.full_name"],
-      order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
-      limit: 5,
-      raw: true,
-      nest: true,
-    });
-
-    const lowStockItems = await InventoryItem.schema(schema).findAll({
-      where: {
-        status: "In Stock",
-        quantity: { [Op.lte]: Sequelize.col("min_stock_level") },
-      },
-      attributes: [
-        "id",
-        "item_name",
-        "pattern",
-        "quantity",
-        "min_stock_level",
-      ],
-      limit: 20,
-    });
+    const topItemsWithProfit = topItemsRevenue.map((item) => ({
+      id: item.id,
+      name: item.name,
+      pattern: item.pattern,
+      fabric_type: item.fabric_type,
+      revenue: parseFloat(item.revenue || 0),
+      profit: parseFloat(item.revenue || 0) - parseFloat(item.cost || 0),
+      quantity: parseInt(item.quantity || 0, 10),
+    }));
 
     const dashboardData = {
       kpi: {
@@ -374,253 +341,273 @@ const aggregateOwnerDashboard = async (tenant) => {
 const aggregateManagerDashboard = async (tenant, branchId) => {
   try {
     const schema = tenant.db_schema;
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const todayStart = startOfKuwaitDay(new Date());
+    const weekStart = daysAgoKuwaitStart(7);
+    const monthStart = daysAgoKuwaitStart(30);
 
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
+    const [
+      [branchTotals = {}],
+      [branchCost = {}],
+      salesTrend7Days,
+      salesTrend30Days,
+      categoryFabricSales,
+      fabricSales,
+      staffPerformanceToday,
+      staffPerformanceWeek,
+      staffPerformanceMonth,
+      topItemsRevenue,
+      topCustomers,
+      lowStockItems,
+    ] = await Promise.all([
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(inv.total_amount), 0) AS total_sales,
+          COALESCE(SUM(inv.total_meters), 0) AS total_meters,
+          COUNT(*)::int AS invoice_count
+        FROM "${schema}".invoices inv
+        WHERE inv.branch_id = :branchId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        `,
+        {
+          replacements: { branchId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(
+            COALESCE(it.cost_per_meter_snapshot, 0) * COALESCE(it.meters, 0) * COALESCE(it.quantity, 1)
+          ), 0) AS total_cost
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        WHERE inv.branch_id = :branchId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        `,
+        {
+          replacements: { branchId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      Invoice.schema(schema).findAll({
+        where: {
+          branch_id: branchId,
+          createdAt: { [Op.gte]: weekStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
+        ],
+        group: [Sequelize.fn("date", Sequelize.col("created_at"))],
+        order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
+        raw: true,
+      }),
+      Invoice.schema(schema).findAll({
+        where: {
+          branch_id: branchId,
+          createdAt: { [Op.gte]: monthStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
+        ],
+        group: [Sequelize.fn("date", Sequelize.col("created_at"))],
+        order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
+        raw: true,
+      }),
+      sequelize.query(
+        `
+        SELECT
+          CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
+          ii.pattern,
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+        WHERE inv.branch_id = :branchId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY it.fabric_type, ii.pattern
+        ORDER BY revenue DESC
+      `,
+        {
+          replacements: { branchId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        WHERE inv.branch_id = :branchId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY it.fabric_type
+        ORDER BY it.fabric_type ASC
+      `,
+        {
+          replacements: { branchId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      Invoice.schema(schema).findAll({
+        where: {
+          branch_id: branchId,
+          createdAt: { [Op.gte]: todayStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          "created_by",
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_sales"],
+          [Sequelize.fn("count", Sequelize.col("id")), "invoice_count"],
+        ],
+        include: [
+          {
+            model: User.schema(schema),
+            as: "creator",
+            attributes: ["full_name"],
+          },
+        ],
+        group: ["created_by", "creator.id", "creator.full_name"],
+        order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
+        raw: true,
+        nest: true,
+      }),
+      Invoice.schema(schema).findAll({
+        where: {
+          branch_id: branchId,
+          createdAt: { [Op.gte]: weekStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          "created_by",
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_sales"],
+          [Sequelize.fn("count", Sequelize.col("id")), "invoice_count"],
+        ],
+        include: [
+          {
+            model: User.schema(schema),
+            as: "creator",
+            attributes: ["full_name"],
+          },
+        ],
+        group: ["created_by", "creator.id", "creator.full_name"],
+        order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
+        raw: true,
+        nest: true,
+      }),
+      Invoice.schema(schema).findAll({
+        where: {
+          branch_id: branchId,
+          createdAt: { [Op.gte]: monthStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          "created_by",
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_sales"],
+          [Sequelize.fn("count", Sequelize.col("id")), "invoice_count"],
+        ],
+        include: [
+          {
+            model: User.schema(schema),
+            as: "creator",
+            attributes: ["full_name"],
+          },
+        ],
+        group: ["created_by", "creator.id", "creator.full_name"],
+        order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
+        raw: true,
+        nest: true,
+      }),
+      sequelize.query(
+        `
+        SELECT
+          ii.id,
+          ii.item_name AS name,
+          ii.pattern,
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+        WHERE inv.branch_id = :branchId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
+        ORDER BY revenue DESC
+        LIMIT 5
+      `,
+        {
+          replacements: { branchId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      Invoice.schema(schema).findAll({
+        where: {
+          branch_id: branchId,
+          createdAt: { [Op.gte]: todayStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          "customer_id",
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_value"],
+        ],
+        include: [
+          {
+            model: Customer.schema(schema),
+            as: "customer",
+            attributes: ["full_name"],
+          },
+        ],
+        group: ["customer_id", "customer.id", "customer.full_name"],
+        order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
+        limit: 5,
+        raw: true,
+        nest: true,
+      }),
+      InventoryItem.schema(schema).findAll({
+        where: {
+          branch_id: branchId,
+          status: "In Stock",
+          quantity: { [Op.lte]: Sequelize.col("min_stock_level") },
+        },
+        attributes: [
+          "id",
+          "item_name",
+          "pattern",
+          "quantity",
+          "min_stock_level",
+        ],
+        limit: 20,
+      }),
+    ]);
 
-    const monthStart = new Date();
-    monthStart.setDate(monthStart.getDate() - 30);
-
-    const invoicesToday = await Invoice.schema(schema).findAll({
-      where: {
-        branch_id: branchId,
-        createdAt: { [Op.gte]: todayStart },
-        status: "Paid",
-      },
-      include: [{ model: InvoiceItem.schema(schema), as: "items" }],
-    });
-
-    let branchSalesToday = 0;
-    let totalMetersToday = 0;
-    let totalCostToday = 0;
-
-    invoicesToday.forEach((inv) => {
-      branchSalesToday += parseFloat(inv.total_amount || 0);
-      totalMetersToday += parseFloat(inv.total_meters || 0);
-      inv.items.forEach((item) => {
-        const meters = parseFloat(item.meters || 0);
-        const qty = parseInt(item.quantity, 10) || 1;
-        const buyPrice = parseFloat(item.cost_per_meter_snapshot || 0);
-        totalCostToday += meters * qty * buyPrice;
-      });
-    });
-
+    const branchSalesToday = parseFloat(branchTotals.total_sales || 0);
+    const totalMetersToday = parseFloat(branchTotals.total_meters || 0);
+    const invoiceCountToday = parseInt(branchTotals.invoice_count || 0, 10);
+    const totalCostToday = parseFloat(branchCost.total_cost || 0);
     const netProfitToday = branchSalesToday - totalCostToday;
     const avgSaleValue =
-      invoicesToday.length > 0 ? branchSalesToday / invoicesToday.length : 0;
-
-    const salesTrend7Days = await Invoice.schema(schema).findAll({
-      where: {
-        branch_id: branchId,
-        createdAt: { [Op.gte]: weekStart },
-        status: "Paid",
-      },
-      attributes: [
-        [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
-      ],
-      group: [Sequelize.fn("date", Sequelize.col("created_at"))],
-      order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
-      raw: true,
-    });
-
-    const salesTrend30Days = await Invoice.schema(schema).findAll({
-      where: {
-        branch_id: branchId,
-        createdAt: { [Op.gte]: monthStart },
-        status: "Paid",
-      },
-      attributes: [
-        [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
-      ],
-      group: [Sequelize.fn("date", Sequelize.col("created_at"))],
-      order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
-      raw: true,
-    });
-
-    const categoryFabricSales = await sequelize.query(
-      `
-      SELECT
-        CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
-        ii.pattern,
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.fabric_type, ii.pattern
-      ORDER BY revenue DESC
-    `,
-      {
-        replacements: { branchId, todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
-    );
-
-    const fabricSales = await sequelize.query(
-      `
-      SELECT
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.fabric_type
-      ORDER BY it.fabric_type ASC
-    `,
-      {
-        replacements: { branchId, todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
-    );
-
-    const staffPerformanceToday = await Invoice.schema(schema).findAll({
-      where: {
-        branch_id: branchId,
-        createdAt: { [Op.gte]: todayStart },
-        status: "Paid",
-      },
-      attributes: [
-        "created_by",
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_sales"],
-        [Sequelize.fn("count", Sequelize.col("id")), "invoice_count"],
-      ],
-      include: [
-        {
-          model: User.schema(schema),
-          as: "creator",
-          attributes: ["full_name"],
-        },
-      ],
-      group: ["created_by", "creator.id", "creator.full_name"],
-      order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
-      raw: true,
-      nest: true,
-    });
-
-    const staffPerformanceWeek = await Invoice.schema(schema).findAll({
-      where: {
-        branch_id: branchId,
-        createdAt: { [Op.gte]: weekStart },
-        status: "Paid",
-      },
-      attributes: [
-        "created_by",
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_sales"],
-        [Sequelize.fn("count", Sequelize.col("id")), "invoice_count"],
-      ],
-      include: [
-        {
-          model: User.schema(schema),
-          as: "creator",
-          attributes: ["full_name"],
-        },
-      ],
-      group: ["created_by", "creator.id", "creator.full_name"],
-      order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
-      raw: true,
-      nest: true,
-    });
-
-    const staffPerformanceMonth = await Invoice.schema(schema).findAll({
-      where: {
-        branch_id: branchId,
-        createdAt: { [Op.gte]: monthStart },
-        status: "Paid",
-      },
-      attributes: [
-        "created_by",
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_sales"],
-        [Sequelize.fn("count", Sequelize.col("id")), "invoice_count"],
-      ],
-      include: [
-        {
-          model: User.schema(schema),
-          as: "creator",
-          attributes: ["full_name"],
-        },
-      ],
-      group: ["created_by", "creator.id", "creator.full_name"],
-      order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
-      raw: true,
-      nest: true,
-    });
-
-    const topItemsRevenue = await sequelize.query(
-      `
-      SELECT
-        ii.id,
-        ii.item_name AS name,
-        ii.pattern,
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.branch_id = :branchId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
-      ORDER BY revenue DESC
-      LIMIT 5
-    `,
-      {
-        replacements: { branchId, todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
-    );
-
-    const topCustomers = await Invoice.schema(schema).findAll({
-      where: {
-        branch_id: branchId,
-        createdAt: { [Op.gte]: todayStart },
-        status: "Paid",
-      },
-      attributes: [
-        "customer_id",
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "total_value"],
-      ],
-      include: [
-        {
-          model: Customer.schema(schema),
-          as: "customer",
-          attributes: ["full_name"],
-        },
-      ],
-      group: ["customer_id", "customer.id", "customer.full_name"],
-      order: [[Sequelize.fn("sum", Sequelize.col("total_amount")), "DESC"]],
-      limit: 5,
-      raw: true,
-      nest: true,
-    });
-
-    const lowStockItems = await InventoryItem.schema(schema).findAll({
-      where: {
-        branch_id: branchId,
-        status: "In Stock",
-        quantity: { [Op.lte]: Sequelize.col("min_stock_level") },
-      },
-      attributes: [
-        "id",
-        "item_name",
-        "pattern",
-        "quantity",
-        "min_stock_level",
-      ],
-      limit: 20,
-    });
+      invoiceCountToday > 0 ? branchSalesToday / invoiceCountToday : 0;
 
     const dashboardData = {
       kpi: {
         branch_sales: branchSalesToday.toFixed(3),
         net_profit: netProfitToday.toFixed(3),
         total_meters: totalMetersToday.toFixed(3),
-        invoice_count: invoicesToday.length,
+        invoice_count: invoiceCountToday,
         avg_sale_value: avgSaleValue.toFixed(3),
         low_stock_count: lowStockItems.length,
       },
@@ -711,111 +698,140 @@ const aggregateManagerDashboard = async (tenant, branchId) => {
 const aggregateSalesmanDashboard = async (tenant, userId) => {
   try {
     const schema = tenant.db_schema;
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const todayStart = startOfKuwaitDay(new Date());
+    const weekStart = daysAgoKuwaitStart(7);
 
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
+    const [
+      [myTotals = {}],
+      [itemsTotals = {}],
+      salesTrend7Days,
+      categoryFabricSales,
+      fabricSales,
+      topItems,
+    ] = await Promise.all([
+      sequelize.query(
+        `
+        SELECT
+          COALESCE(SUM(inv.total_amount), 0) AS my_sales_today,
+          COALESCE(SUM(inv.total_meters), 0) AS my_meters_today,
+          COUNT(*)::int AS invoice_count
+        FROM "${schema}".invoices inv
+        WHERE inv.created_by = :userId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        `,
+        {
+          replacements: { userId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT COUNT(*)::int AS items_sold
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        WHERE inv.created_by = :userId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        `,
+        {
+          replacements: { userId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      Invoice.schema(schema).findAll({
+        where: {
+          created_by: userId,
+          createdAt: { [Op.gte]: weekStart },
+          status: { [Op.in]: ["Paid", "Partially Refunded"] },
+        },
+        attributes: [
+          [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
+          [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
+        ],
+        group: [Sequelize.fn("date", Sequelize.col("created_at"))],
+        order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
+        raw: true,
+      }),
+      sequelize.query(
+        `
+        SELECT
+          CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
+          ii.pattern,
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+        WHERE inv.created_by = :userId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY it.fabric_type, ii.pattern
+        ORDER BY revenue DESC
+      `,
+        {
+          replacements: { userId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        WHERE inv.created_by = :userId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY it.fabric_type
+        ORDER BY it.fabric_type ASC
+      `,
+        {
+          replacements: { userId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+      sequelize.query(
+        `
+        SELECT
+          ii.id,
+          ii.item_name AS name,
+          ii.pattern,
+          it.fabric_type,
+          SUM(it.total_price) AS revenue,
+          COUNT(it.id) AS quantity
+        FROM "${schema}".invoice_items it
+        INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
+        INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
+        WHERE inv.created_by = :userId
+          AND inv.created_at >= :todayStart
+          AND inv.status IN ('Paid', 'Partially Refunded')
+        GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
+        ORDER BY revenue DESC
+        LIMIT 5
+      `,
+        {
+          replacements: { userId, todayStart },
+          type: sequelize.QueryTypes.SELECT,
+        },
+      ),
+    ]);
 
-    const invoicesToday = await Invoice.schema(schema).findAll({
-      where: {
-        created_by: userId,
-        createdAt: { [Op.gte]: todayStart },
-        status: "Paid",
-      },
-      include: [{ model: InvoiceItem.schema(schema), as: "items" }],
-    });
-
-    let mySalesToday = 0;
-    let itemsSoldCount = 0;
-    invoicesToday.forEach((inv) => {
-      mySalesToday += parseFloat(inv.total_amount || 0);
-      itemsSoldCount += inv.items.length;
-    });
-
+    const mySalesToday = parseFloat(myTotals.my_sales_today || 0);
+    const myMetersToday = parseFloat(myTotals.my_meters_today || 0);
+    const myInvoiceCount = parseInt(myTotals.invoice_count || 0, 10);
+    const itemsSoldCount = parseInt(itemsTotals.items_sold || 0, 10);
     const avgSaleValue =
-      invoicesToday.length > 0 ? mySalesToday / invoicesToday.length : 0;
-
-    const salesTrend7Days = await Invoice.schema(schema).findAll({
-      where: {
-        created_by: userId,
-        createdAt: { [Op.gte]: weekStart },
-        status: "Paid",
-      },
-      attributes: [
-        [Sequelize.fn("date", Sequelize.col("created_at")), "date"],
-        [Sequelize.fn("sum", Sequelize.col("total_amount")), "revenue"],
-      ],
-      group: [Sequelize.fn("date", Sequelize.col("created_at"))],
-      order: [[Sequelize.fn("date", Sequelize.col("created_at")), "ASC"]],
-      raw: true,
-    });
-
-    const categoryFabricSales = await sequelize.query(
-      `
-      SELECT
-        CONCAT(it.fabric_type, ' · ', COALESCE(ii.pattern, '')) AS name,
-        ii.pattern,
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.fabric_type, ii.pattern
-      ORDER BY revenue DESC
-    `,
-      {
-        replacements: { userId, todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
-    );
-
-    const fabricSales = await sequelize.query(
-      `
-      SELECT
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY it.fabric_type
-      ORDER BY it.fabric_type ASC
-    `,
-      {
-        replacements: { userId, todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
-    );
-
-    const topItems = await sequelize.query(
-      `
-      SELECT
-        ii.id,
-        ii.item_name AS name,
-        ii.pattern,
-        it.fabric_type,
-        SUM(it.total_price) AS revenue,
-        COUNT(it.id) AS quantity
-      FROM "${schema}".invoice_items it
-      INNER JOIN "${schema}".invoices inv ON it.invoice_id = inv.id
-      INNER JOIN "${schema}".inventory_items ii ON it.inventory_item_id = ii.id
-      WHERE inv.created_by = :userId AND inv.created_at >= :todayStart AND inv.status = 'Paid'
-      GROUP BY ii.id, ii.item_name, ii.pattern, it.fabric_type
-      ORDER BY revenue DESC
-      LIMIT 5
-    `,
-      {
-        replacements: { userId, todayStart },
-        type: sequelize.QueryTypes.SELECT,
-      },
-    );
+      myInvoiceCount > 0 ? mySalesToday / myInvoiceCount : 0;
 
     const dashboardData = {
       kpi: {
         my_sales_today: mySalesToday.toFixed(3),
+        my_meters_today: myMetersToday.toFixed(2),
+        invoice_count: myInvoiceCount,
         items_sold_count: itemsSoldCount,
         avg_sale_value: avgSaleValue.toFixed(3),
       },

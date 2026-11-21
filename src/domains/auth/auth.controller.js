@@ -6,6 +6,7 @@ import User from "./user.model.js";
 import Branch from "../store/branch.model.js";
 import Tenant from "../platform/tenant.model.js";
 import { cacheSet } from "../../config/redis.js";
+import { invalidateAuthUserCache } from "../../middlewares/auth.middleware.js";
 import logger from "../../utils/logger.js";
 
 const generateToken = (user, tenantSlug) => {
@@ -147,6 +148,7 @@ export const logout = async (req, res) => {
               by: 1,
               where: { id: decoded.id },
             });
+            await invalidateAuthUserCache(tenant.db_schema, decoded.id);
           }
         }
       }

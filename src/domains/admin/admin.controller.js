@@ -15,6 +15,8 @@ import {
   StoreProvisioningError,
 } from "../platform/tenantProvisioning.service.js";
 import { invalidateTenantCache } from "../../utils/tenant-cache.js";
+import { cacheGet, cacheSet, cacheDelete } from "../../config/redis.js";
+import { invalidateAuthUserCache } from "../../middlewares/auth.middleware.js";
 import { deleteImage, deleteStoreFolder } from "../../utils/fileUpload.js";
 import logger from "../../utils/logger.js";
 import {
@@ -155,6 +157,9 @@ export const logout = async (req, res) => {
   return res.json({ success: true, message: "Logged out successfully." });
 };
 
+const TENANT_OWNER_CACHE_TTL_SECONDS = 600;
+const TENANT_OWNER_QUERY_CONCURRENCY = 5;
+
 export const listTenants = async (_req, res) => {
   try {
     const tenants = await Tenant.findAll({
@@ -164,21 +169,39 @@ export const listTenants = async (_req, res) => {
       ],
     });
 
-    const tenantList = await Promise.all(
-      tenants.map(async (t) => {
-        const tenantJson = t.toJSON();
-        try {
-          const ownerUser = await User.schema(t.db_schema).findOne({
-            where: { role: "store_owner" },
-            attributes: ["username"],
-          });
-          tenantJson.owner_username = ownerUser?.username || null;
-        } catch {
-          tenantJson.owner_username = null;
-        }
-        return tenantJson;
-      }),
-    );
+    // Bound per-schema lookups + cache owner usernames so listing many tenants
+    // never saturates the shared PostgreSQL connection pool.
+    const tenantList = new Array(tenants.length);
+    for (let i = 0; i < tenants.length; i += TENANT_OWNER_QUERY_CONCURRENCY) {
+      const batch = tenants.slice(i, i + TENANT_OWNER_QUERY_CONCURRENCY);
+      const resolvedBatch = await Promise.all(
+        batch.map(async (t) => {
+          const tenantJson = t.toJSON();
+          const cacheKey = `admin:tenant_owner:${t.db_schema}`;
+          try {
+            const cached = await cacheGet(cacheKey);
+            if (cached && Object.prototype.hasOwnProperty.call(cached, "username")) {
+              tenantJson.owner_username = cached.username;
+              return tenantJson;
+            }
+            const ownerUser = await User.schema(t.db_schema).findOne({
+              where: { role: "store_owner" },
+              attributes: ["username"],
+              raw: true,
+            });
+            const username = ownerUser?.username || null;
+            tenantJson.owner_username = username;
+            await cacheSet(cacheKey, { username }, TENANT_OWNER_CACHE_TTL_SECONDS);
+          } catch {
+            tenantJson.owner_username = null;
+          }
+          return tenantJson;
+        }),
+      );
+      for (let j = 0; j < resolvedBatch.length; j++) {
+        tenantList[i + j] = resolvedBatch[j];
+      }
+    }
 
     return res.json({ success: true, data: tenantList });
   } catch (error) {
@@ -284,6 +307,7 @@ export const deleteTenant = async (req, res) => {
     await sequelize.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE;`);
     await tenant.destroy();
     await invalidateTenantCache(slug);
+    await cacheDelete(`admin:tenant_owner:${schemaName}`);
     await deleteStoreFolder(slug);
 
     return res.json({
@@ -549,6 +573,7 @@ export const listTenantUsers = async (req, res) => {
     if (!tenant) return;
 
     const schema = tenant.db_schema;
+    const limit = parseLimit(req.query?.limit, 250, 500);
     const users = await User.schema(schema).findAll({
       attributes: [
         "id",
@@ -572,6 +597,7 @@ export const listTenantUsers = async (req, res) => {
         ["role", "ASC"],
         ["id", "ASC"],
       ],
+      limit,
     });
 
     return res.json({ success: true, data: users });
@@ -605,6 +631,7 @@ export const updateTenantUserPassword = async (req, res) => {
     user.password = password;
     user.token_version = (user.token_version || 0) + 1;
     await user.save();
+    await invalidateAuthUserCache(schema, user.id);
 
     return res.json({
       success: true,
@@ -661,6 +688,7 @@ export const resetTenantPassword = async (req, res) => {
     user.password = password;
     user.token_version = (user.token_version || 0) + 1;
     await user.save();
+    await invalidateAuthUserCache(schema, user.id);
 
     return res.json({
       success: true,

@@ -11,7 +11,10 @@ dotenv.config({ path: envPath });
 import sequelize from "../src/config/database.js";
 import Tenant from "../src/domains/platform/tenant.model.js";
 import logger from "../src/utils/logger.js";
-import { createIndexesForSchema } from "../src/utils/index-helper.js";
+import {
+  createIndexesForSchema,
+  createSearchIndexesForSchema,
+} from "../src/utils/index-helper.js";
 
 async function addIndexes() {
   try {
@@ -69,6 +72,7 @@ async function addIndexes() {
         });
 
         const result = await createIndexesForSchema(schema);
+        const searchResult = await createSearchIndexesForSchema(schema);
 
         logger.info("Indexes created for tenant", {
           component: "add-database-indexes",
@@ -77,6 +81,9 @@ async function addIndexes() {
           created: result.created,
           skipped: result.skipped,
           failed: result.failed,
+          searchCreated: searchResult.created,
+          searchSkipped: searchResult.skipped,
+          searchFailed: searchResult.failed,
         });
       } catch (error) {
         logger.error("Failed to create indexes for tenant", {
