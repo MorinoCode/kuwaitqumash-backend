@@ -390,33 +390,16 @@ export const createSale = async (req, res) => {
         { model: InvoiceItem.schema(schema), as: "items" },
         { model: InvoicePayment.schema(schema), as: "payments" },
         { model: Customer.schema(schema), as: "customer" },
-        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone"] },
+        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone", "logo_url"] },
         { model: User.schema(schema), as: "creator", attributes: ["full_name"] },
       ],
     });
 
-    let branchWhatsappInvoiceEnabled = false;
-    let branchWhatsappInvoiceToStoreEnabled = false;
-    let branchWhatsappInvoiceToStorePhone = null;
-    try {
-      const branchId = newInvoice.branch_id;
-      if (branchId) {
-        const Branch = sequelize.models.Branch;
-        const branch = await Branch.schema(schema).findByPk(branchId);
-        if (branch) {
-          branchWhatsappInvoiceEnabled = !!branch.whatsapp_invoice_enabled;
-          branchWhatsappInvoiceToStoreEnabled =
-            !!branch.whatsapp_invoice_to_store_enabled;
-          branchWhatsappInvoiceToStorePhone =
-            branch.whatsapp_invoice_to_store_phone;
-        }
-      }
-    } catch (e) {
-      logger.warn("Failed to fetch branch WhatsApp setting", {
-        component: "sales",
-        error: e?.message,
-      });
-    }
+    const branchWhatsappInvoiceEnabled = !!invoiceBranch?.whatsapp_invoice_enabled;
+    const branchWhatsappInvoiceToStoreEnabled =
+      !!invoiceBranch?.whatsapp_invoice_to_store_enabled;
+    const branchWhatsappInvoiceToStorePhone =
+      invoiceBranch?.whatsapp_invoice_to_store_phone || null;
 
     logger.info("Checking auto-send to store owner", {
       component: "sales",

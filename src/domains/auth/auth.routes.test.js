@@ -6,6 +6,7 @@ const routes = [
   ["post", "/login"],
   ["post", "/logout"],
   ["get", "/me"],
+  ["put", "/change-password"],
 ];
 
 const has = (method, path) =>

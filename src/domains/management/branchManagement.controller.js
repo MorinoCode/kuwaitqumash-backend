@@ -210,6 +210,11 @@ export const uploadBranchLogo = async (req, res) => {
     }
 
     const logoUrl = await saveBranchLogo(req.file, tenantSlug, id);
+    if (!logoUrl) {
+      return res.status(500).json({
+        message: "Failed to save logo. Storage service returned no URL.",
+      });
+    }
 
     await branch.update({ logo_url: logoUrl });
 

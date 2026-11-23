@@ -214,3 +214,57 @@ export const getMe = async (req, res) => {
       });
   }
 };
+
+export const changePassword = async (req, res) => {
+  try {
+    const schema = req.tenant.db_schema;
+    const { current_password, new_password } = req.body;
+
+    const user = await User.schema(schema).findByPk(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const isMatch = await bcrypt.compare(current_password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Current password is incorrect." });
+    }
+
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+    const nextTokenVersion = (user.token_version ?? 0) + 1;
+    await user.update({
+      password: hashedPassword,
+      token_version: nextTokenVersion,
+    });
+    await invalidateAuthUserCache(schema, user.id);
+
+    const token = generateToken(
+      { id: user.id, token_version: nextTokenVersion },
+      req.tenant.slug,
+    );
+    const isProduction = process.env.NODE_ENV === "production";
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      path: "/",
+      maxAge: 24 * 60 * 60 * 1000,
+    });
+
+    return res.json({
+      success: true,
+      message: "Password updated successfully.",
+      data: { token },
+    });
+  } catch (error) {
+    logger.error("Change password error", {
+      component: "auth",
+      userId: req.user?.id,
+      error: error?.message,
+      requestId: req.requestId,
+    });
+    return res.status(500).json({
+      message: "Failed to change password. Please try again.",
+    });
+  }
+};

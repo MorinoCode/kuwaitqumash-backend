@@ -4,7 +4,7 @@ import { resolveTenant } from '../../middlewares/tenant.middleware.js';
 import { protect } from '../../middlewares/auth.middleware.js';
 import { loginRateLimit } from '../../middlewares/rateLimit.middleware.js';
 import { validate } from '../../middlewares/validate.middleware.js';
-import { loginBody } from '../../validations/auth.schemas.js';
+import { loginBody, changePasswordBody } from '../../validations/auth.schemas.js';
 
 const router = express.Router();
 
@@ -13,5 +13,7 @@ router.post('/login', loginRateLimit, resolveTenant, validate(loginBody), authCo
 router.post('/logout', authController.logout);
 
 router.get('/me', resolveTenant, protect, authController.getMe);
+
+router.put('/change-password', resolveTenant, protect, validate(changePasswordBody), authController.changePassword);
 
 export default router;

@@ -32,7 +32,7 @@ const Branch = sequelize.define(
     whatsapp_invoice_enabled: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
-      defaultValue: false,
+      defaultValue: true,
     },
     whatsapp_invoice_to_store_enabled: {
       type: DataTypes.BOOLEAN,

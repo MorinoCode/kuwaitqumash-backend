@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
@@ -10,6 +11,37 @@ import {
 } from "@aws-sdk/client-s3";
 import sharp from "sharp";
 import logger from "./logger.js";
+
+const LOCAL_UPLOADS_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "public",
+  "uploads",
+);
+
+const resolveSafeLocalUploadPath = (relativeKey) => {
+  const cleaned = String(relativeKey || "").replace(/^\/+/, "");
+  if (!cleaned) return null;
+  const resolved = path.resolve(LOCAL_UPLOADS_ROOT, cleaned);
+  if (
+    resolved !== LOCAL_UPLOADS_ROOT &&
+    !resolved.startsWith(`${LOCAL_UPLOADS_ROOT}${path.sep}`)
+  ) {
+    return null;
+  }
+  return resolved;
+};
+
+const saveBufferLocally = async ({ buffer, key }) => {
+  const targetPath = resolveSafeLocalUploadPath(key);
+  if (!targetPath) {
+    throw new Error("Invalid local upload path");
+  }
+  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.promises.writeFile(targetPath, buffer);
+  return `/uploads/${key}`;
+};
 
 const sanitizeSegment = (value) =>
   String(value || "")
@@ -148,10 +180,7 @@ export const saveImage = async (
   if (!file) return null;
 
   const cfg = getR2Config();
-  if (!getS3Client(cfg)) {
-    await removeTempFile(file);
-    return null;
-  }
+  const hasR2 = Boolean(getS3Client(cfg));
 
   try {
     const rawBuffer = await readUploadedBuffer(file);
@@ -169,13 +198,16 @@ export const saveImage = async (
     ]);
     const key = path.posix.join(dirKey, `${fileId}.webp`);
 
-    return await uploadBufferToR2({
-      buffer: compressedBuffer,
-      key,
-      contentType: "image/webp",
-    });
+    if (hasR2) {
+      return await uploadBufferToR2({
+        buffer: compressedBuffer,
+        key,
+        contentType: "image/webp",
+      });
+    }
+    return await saveBufferLocally({ buffer: compressedBuffer, key });
   } catch (error) {
-    logger.error("Failed to process/upload image to R2", {
+    logger.error("Failed to process/upload image", {
       component: "fileUpload",
       error: error?.message,
     });
@@ -189,10 +221,7 @@ export const saveBranchLogo = async (file, store, branchId) => {
   if (!file) return null;
 
   const cfg = getR2Config();
-  if (!getS3Client(cfg)) {
-    await removeTempFile(file);
-    return null;
-  }
+  const hasR2 = Boolean(getS3Client(cfg));
 
   try {
     const rawBuffer = await readUploadedBuffer(file);
@@ -209,13 +238,16 @@ export const saveBranchLogo = async (file, store, branchId) => {
     ]);
     const key = path.posix.join(dirKey, `logo_${Date.now()}.png`);
 
-    return await uploadBufferToR2({
-      buffer: pngBuffer,
-      key,
-      contentType: "image/png",
-    });
+    if (hasR2) {
+      return await uploadBufferToR2({
+        buffer: pngBuffer,
+        key,
+        contentType: "image/png",
+      });
+    }
+    return await saveBufferLocally({ buffer: pngBuffer, key });
   } catch (error) {
-    logger.error("Failed to process/upload branch logo to R2", {
+    logger.error("Failed to process/upload branch logo", {
       component: "fileUpload",
       error: error?.message,
     });
@@ -226,21 +258,40 @@ export const saveBranchLogo = async (file, store, branchId) => {
 };
 
 export const deleteImage = async (imageUrl) => {
-  if (!imageUrl) return;
+  if (!imageUrl || typeof imageUrl !== "string") return;
+
+  const trimmed = imageUrl.trim();
+  if (trimmed.startsWith("/uploads/")) {
+    const relKey = trimmed.slice("/uploads/".length);
+    const localPath = resolveSafeLocalUploadPath(relKey);
+    if (!localPath) return;
+    try {
+      await fs.promises.unlink(localPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        logger.warn("Failed to delete local image", {
+          component: "fileUpload",
+          path: localPath,
+          error: error?.message,
+        });
+      }
+    }
+    return;
+  }
 
   const cfg = getR2Config();
   const client = getS3Client(cfg);
   if (!client) return;
 
   // Gracefully ignore non-R2 legacy URLs during Cloudinary -> R2 transition.
-  if (imageUrl.includes("res.cloudinary.com")) {
+  if (trimmed.includes("res.cloudinary.com")) {
     logger.debug("Skipping legacy Cloudinary delete after R2 migration", {
       component: "fileUpload",
     });
     return;
   }
 
-  const key = extractObjectKeyFromUrl(imageUrl);
+  const key = extractObjectKeyFromUrl(trimmed);
   if (!key) return;
 
   try {
@@ -263,11 +314,24 @@ export const deleteStoreFolder = async (store) => {
   if (!store) return;
 
   const cfg = getR2Config();
-  const client = getS3Client(cfg);
-  if (!client) return;
-
   const prefix = buildObjectKey([cfg.prefix, store]);
   if (!prefix) return;
+
+  const localStoreDir = resolveSafeLocalUploadPath(prefix);
+  if (localStoreDir) {
+    try {
+      await fs.promises.rm(localStoreDir, { recursive: true, force: true });
+    } catch (error) {
+      logger.warn("Failed to delete local store uploads folder", {
+        component: "fileUpload",
+        store,
+        error: error?.message,
+      });
+    }
+  }
+
+  const client = getS3Client(cfg);
+  if (!client) return;
 
   try {
     let continuationToken;

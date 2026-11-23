@@ -16,3 +16,11 @@ export const loginBody = z.object({
   username,
   password,
 }).strict();
+
+export const changePasswordBody = z.object({
+  current_password: z.string().min(1, 'Current password is required.').max(200),
+  new_password: z
+    .string()
+    .min(6, 'New password must be at least 6 characters.')
+    .max(200),
+}).strict();

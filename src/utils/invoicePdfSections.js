@@ -4,9 +4,28 @@ import {
   safeStr,
   formatDate,
   formatTime,
-  L,
   label,
 } from "./invoicePdfHelpers.js";
+
+export const fitLogoDimensions = (doc, base64, maxW, maxH) => {
+  try {
+    const props = doc.getImageProperties(base64);
+    if (props?.width > 0 && props?.height > 0) {
+      const ratio = props.width / props.height;
+      let width = maxW;
+      let height = width / ratio;
+      if (height > maxH) {
+        height = maxH;
+        width = height * ratio;
+      }
+      return { width, height };
+    }
+  } catch {
+    // Fallback to square dimensions when metadata cannot be parsed
+  }
+  const size = Math.min(maxW, maxH);
+  return { width: size, height: size };
+};
 
 export const drawInvoiceHeaderSection = ({
   doc,
@@ -30,16 +49,21 @@ export const drawInvoiceHeaderSection = ({
 
   if (logoBase64Watermark) {
     try {
-      const logoSize = 50;
-      const watermarkX = (pageW - logoSize) / 2;
-      const watermarkY = (pageH - logoSize) / 2;
+      const { width: wmW, height: wmH } = fitLogoDimensions(
+        doc,
+        logoBase64Watermark,
+        55,
+        55
+      );
+      const watermarkX = (pageW - wmW) / 2;
+      const watermarkY = (pageH - wmH) / 2;
       doc.addImage(
         logoBase64Watermark,
         "PNG",
         watermarkX,
         watermarkY,
-        logoSize,
-        logoSize,
+        wmW,
+        wmH,
         undefined,
         "FAST"
       );
@@ -80,21 +104,26 @@ export const drawInvoiceHeaderSection = ({
     doc.restoreGraphicsState();
   }
 
-  const branchSectionHeight = 8;
-
   if (logoBase64) {
-    const logoSize = 6;
     const logoY = y + 0.5;
+    let logoHeightUsed = 14;
 
     try {
-      const logoX = (pageW - logoSize) / 2;
+      const { width: logoW, height: logoH } = fitLogoDimensions(
+        doc,
+        logoBase64,
+        42,
+        14
+      );
+      logoHeightUsed = logoH;
+      const logoX = (pageW - logoW) / 2;
       doc.addImage(
         logoBase64,
         "PNG",
         logoX,
         logoY,
-        logoSize,
-        logoSize,
+        logoW,
+        logoH,
         undefined,
         "FAST"
       );
@@ -105,7 +134,7 @@ export const drawInvoiceHeaderSection = ({
       });
     }
 
-    y += branchSectionHeight + 0.5;
+    y += logoHeightUsed + 2.5;
   }
 
   const accent = [13, 148, 136];
@@ -164,7 +193,6 @@ export const drawInvoiceFooterSection = ({
   y,
   brand,
   brandDark,
-  brandLight,
   invoice,
   user,
   storeSettings,
@@ -189,117 +217,28 @@ export const drawInvoiceFooterSection = ({
     align: "left",
   });
   doc.setTextColor(0, 0, 0);
-  y += netAmountHeight + 2;
+  y += netAmountHeight + 6;
 
-  const termsAr =
-    "الشروط والأحكام: الأقمشة المقصوصة أو المعدّلة حسب الطلب لا تُرد ولا تُستبدل. الاستبدال خلال ٣ أيام بوجود الفاتورة الأصلية وبشرط أن تكون البضاعة بحالتها الأصلية وغير مستخدمة. الكميات المقصوصة نهائية بعد إتمام القص.";
+  y = ensurePageSpace(16, y);
 
-  const termsBoxW = pageW - 2 * m - 4;
-  doc.setFontSize(5.5);
-  setArFont(false);
-  const termsArLines = doc.splitTextToSize(termsAr, termsBoxW);
-  const termsHeight = 3.0 + termsArLines.length * 3.0 + 1.5;
-
-  y = ensurePageSpace(termsHeight + 2, y);
-
-  doc.setDrawColor(...brandDark);
-  doc.setLineWidth(0.4);
-  doc.rect(m, y - 0.5, pageW - 2 * m, termsHeight);
-  doc.setFillColor(...brandLight);
-  doc.rect(m + 0.3, y - 0.3, pageW - 2 * m - 0.6, termsHeight - 0.6, "F");
-
-  doc.setTextColor(80, 80, 80);
-
-  const arStartY = y + 2.5;
-  setArFont(false);
-  termsArLines.forEach((line, idx) => {
-    doc.text(line, pageW - m - 1.5, arStartY + idx * 3.0, {
-      maxWidth: termsBoxW,
-      align: "right",
-    });
-  });
-
-  y += termsHeight + 4.5;
-
-  const kycHeight = 2 * 6.5 + 16;
-  y = ensurePageSpace(kycHeight, y);
-
-  const kycX = m;
-  const kycW = pageW - 2 * m;
-  const rowH = 6.5;
-
-  doc.setDrawColor(...brandDark);
-  doc.setLineWidth(0.2);
-
-  const drawCell = (x, cellY, w, h, bg = null) => {
-    if (bg) {
-      doc.setFillColor(...bg);
-      doc.rect(x, cellY, w, h, "F");
-    }
-    doc.rect(x, cellY, w, h);
-  };
-
-  const drawCheckboxWithText = (rightX, midY, text) => {
-    const boxS = 1.8;
-    const boxX = rightX - boxS - 1.0;
-    const boxY = midY - boxS / 2;
-    doc.setDrawColor(...brandDark);
-    doc.rect(boxX, boxY, boxS, boxS);
-    setArFont(false);
-    doc.text(text, boxX - 1.0, midY + 1.2, { align: "right" });
-  };
-
-  const headerBg = brandLight;
-
-  const drawRowHeader = (rowY, width, text) => {
-    const rx = kycX + kycW;
-    drawCell(rx - width, rowY, width, rowH, headerBg);
-    setArFont(true);
-    doc.setFontSize(6.0);
-    doc.setTextColor(0, 0, 0);
-    doc.text(text, rx - width / 2, rowY + rowH / 2 + 1.2, { align: "center" });
-  };
-
-  let currentY = y;
-
-  const purposeOptions = [
-    "purposeHome",
-    "purposeTailoring",
-    "purposeTrade",
-    "purposeGift",
-    "purposeOther",
-  ];
-  const purposeHeaderW = kycW * 0.18;
-  drawRowHeader(currentY, purposeHeaderW, L.purchasePurpose.ar);
-
-  let rx = kycX + kycW - purposeHeaderW;
-  const optionW = (rx - kycX) / purposeOptions.length;
-  purposeOptions.forEach((key) => {
-    drawCell(rx - optionW, currentY, optionW, rowH);
-    drawCheckboxWithText(rx, currentY + rowH / 2, L[key].ar);
-    rx -= optionW;
-  });
-  currentY += rowH;
-
-  const notesHeaderW = kycW * 0.18;
-  drawRowHeader(currentY, notesHeaderW, L.notes.ar);
-  drawCell(kycX, currentY, kycW - notesHeaderW, rowH);
-  currentY += rowH + 8;
+  const sigX = m;
+  const sigW = pageW - 2 * m;
+  const currentY = y;
 
   setArFont(true);
   doc.setFontSize(6.5);
   doc.setTextColor(0, 0, 0);
-  doc.text("توقيع العميل", kycX + kycW - 3, currentY, { align: "right" });
-  doc.text("اسم البائع/ 1.", kycX + 3, currentY);
+  doc.text("توقيع العميل", sigX + sigW - 3, currentY, { align: "right" });
+  doc.text("اسم البائع/ 1.", sigX + 3, currentY);
 
   doc.setDrawColor(...brand);
   doc.setLineWidth(0.4);
-  doc.line(kycX + kycW - 28, currentY + 1.5, kycX + kycW - 3, currentY + 1.5);
-  doc.line(kycX + 3, currentY + 1.5, kycX + 28, currentY + 1.5);
+  doc.line(sigX + sigW - 28, currentY + 1.5, sigX + sigW - 3, currentY + 1.5);
+  doc.line(sigX + 3, currentY + 1.5, sigX + 28, currentY + 1.5);
 
   setArabicFont();
   doc.setFontSize(6.0);
-  doc.text(safeStr(user?.full_name, "Admin"), kycX + 15.5, currentY + 6.5, {
+  doc.text(safeStr(user?.full_name, "Admin"), sigX + 15.5, currentY + 6.5, {
     align: "center",
   });
 
