@@ -11,6 +11,7 @@ import {
 import Tenant from "../src/domains/platform/tenant.model.js";
 import ContactMessage from "../src/domains/platform/contact-message.model.js";
 import WhatsAppConfig from "../src/domains/platform/whatsapp.config.model.js";
+import { ensureWhatsAppAuthTable } from "../src/utils/whatsappPgAuthState.js";
 import Branch from "../src/domains/store/branch.model.js";
 import User from "../src/domains/auth/user.model.js";
 import Customer from "../src/domains/customers/customer.model.js";
@@ -68,6 +69,7 @@ const run = async () => {
      ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP WITH TIME ZONE;`
   );
   await WhatsAppConfig.sync({ alter: false });
+  await ensureWhatsAppAuthTable();
   await ContactMessage.sync({ alter: false });
 
   await ensurePgTrgmExtension();

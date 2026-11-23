@@ -51,8 +51,28 @@ export const deleteSessionFromRedis = async (sessionKey) => {
 
 export const sessions = new Map();
 export const sessionLastActivity = new Map();
+export const reconnectTimers = new Map();
 const MAX_ACTIVE_SESSIONS = Number(process.env.WHATSAPP_MAX_ACTIVE_SESSIONS) || 40;
 const IDLE_SESSION_TTL_MS = Number(process.env.WHATSAPP_IDLE_SESSION_TTL_MS) || 0;
+
+export const clearReconnectTimer = (sessionKey) => {
+  const timer = reconnectTimers.get(sessionKey);
+  if (timer) {
+    clearTimeout(timer);
+    reconnectTimers.delete(sessionKey);
+  }
+};
+
+export const extractConnectedPhone = (user) => {
+  if (!user || typeof user !== "object") return null;
+  if (typeof user.phoneNumber === "string" && user.phoneNumber.trim()) {
+    return user.phoneNumber.split("@")[0].split(":")[0].replace(/^\+/, "") || null;
+  }
+  const uid = user.id;
+  if (typeof uid !== "string" || !uid) return null;
+  if (uid.endsWith("@lid")) return null;
+  return uid.split("@")[0].split(":")[0] || null;
+};
 
 export const touchSession = (sessionKey) => {
   sessionLastActivity.set(sessionKey, Date.now());
@@ -194,8 +214,7 @@ export const refreshActiveSessionStatuses = async () => {
     const branchMatch = /^(.*)_branch_(\d+)$/.exec(sessionKey);
     const tenantSlug = branchMatch ? branchMatch[1] : sessionKey;
     const branchId = branchMatch ? Number.parseInt(branchMatch[2], 10) : null;
-    const uid = sock.user?.id;
-    const phone = typeof uid === "string" ? uid.split(":")[0] : null;
+    const phone = extractConnectedPhone(sock.user);
     await publishWhatsAppStatusCache(tenantSlug, branchId, {
       status: "CONNECTED",
       is_ready: true,
@@ -205,6 +224,9 @@ export const refreshActiveSessionStatuses = async () => {
 };
 
 export const closeAllWhatsAppSockets = async () => {
+  for (const sessionKey of Array.from(reconnectTimers.keys())) {
+    clearReconnectTimer(sessionKey);
+  }
   for (const [sessionKey, sock] of sessions.entries()) {
     try {
       sock?.end?.(new Error("Worker shutdown"));
@@ -222,8 +244,7 @@ export const getSessionStatus = async (tenantSlug, branchId = null) => {
       branchId !== null && branchId !== undefined ? Number(branchId) : null;
     const sessionKey = getSessionKey(tenantSlug, normBranchId);
     const session = sessions.get(sessionKey);
-    const uid = session?.user?.id;
-    const phone = typeof uid === "string" ? uid.split(":")[0] : null;
+    const phone = extractConnectedPhone(session?.user);
     if (session?.user) {
       return {
         status: "CONNECTED",
@@ -236,9 +257,7 @@ export const getSessionStatus = async (tenantSlug, branchId = null) => {
     if (normBranchId !== null) {
       const centralKey = getSessionKey(tenantSlug, null);
       const centralSession = sessions.get(centralKey);
-      const centralUid = centralSession?.user?.id;
-      const centralPhone =
-        typeof centralUid === "string" ? centralUid.split(":")[0] : null;
+      const centralPhone = extractConnectedPhone(centralSession?.user);
       if (centralSession?.user) {
         return {
           status: "CONNECTED",

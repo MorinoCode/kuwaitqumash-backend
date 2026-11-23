@@ -9,6 +9,69 @@ import { cacheGet, cacheSet } from "../config/redis.js";
 import { formatKuwaitDate, formatKuwaitTime } from "./kuwaitTime.js";
 
 const fontCache = new Map();
+const BACKEND_PUBLIC_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "public"
+);
+
+const resolveLocalUploadPath = (rawUrl) => {
+  const normalized = String(rawUrl || "").replace(/^\/+/, "");
+  if (!normalized.startsWith("uploads/")) return null;
+
+  const candidates = [
+    path.resolve(process.cwd(), "public", normalized),
+    path.resolve(BACKEND_PUBLIC_DIR, normalized),
+  ];
+
+  for (const candidate of candidates) {
+    const allowedRoots = [
+      path.resolve(process.cwd(), "public", "uploads"),
+      path.resolve(BACKEND_PUBLIC_DIR, "uploads"),
+    ];
+    const isInsideUploads = allowedRoots.some(
+      (root) =>
+        candidate === root || candidate.startsWith(`${root}${path.sep}`)
+    );
+    if (isInsideUploads && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const encodeImageBuffer = async (buf, fallbackMime, preserveTransparency, opacity) => {
+  if (preserveTransparency || opacity < 1.0) {
+    try {
+      let sharpInstance = sharp(buf);
+      if (opacity < 1.0) {
+        const alphaByte = Math.max(0, Math.min(255, Math.round(opacity * 255)));
+        sharpInstance = sharpInstance.ensureAlpha().composite([
+          {
+            input: Buffer.from([255, 255, 255, alphaByte]),
+            raw: { width: 1, height: 1, channels: 4 },
+            tile: true,
+            blend: "dest-in",
+          },
+        ]);
+      }
+      const processedBuffer = await sharpInstance
+        .png({ quality: 100, compressionLevel: 6, adaptiveFiltering: true })
+        .toBuffer();
+      return `data:image/png;base64,${processedBuffer.toString("base64")}`;
+    } catch (sharpError) {
+      logger.warn(
+        "Sharp processing failed, falling back to direct conversion",
+        {
+          component: "invoiceGenerator",
+          error: sharpError?.message,
+        }
+      );
+    }
+  }
+  return `data:${fallbackMime};base64,${buf.toString("base64")}`;
+};
 
 export const safeNum = (v, def = 0) => {
   const num = Number.isFinite(v) ? v : parseFloat(v);
@@ -45,59 +108,31 @@ export async function getImageAsBase64(
         timeout: 10000,
       });
       const buf = Buffer.from(res.data);
-      if (preserveTransparency || opacity < 1.0) {
+      const ct = (res.headers["content-type"] || "").toLowerCase();
+      const fallbackMime = ct.includes("png")
+        ? "image/png"
+        : ct.includes("webp")
+        ? "image/webp"
+        : "image/jpeg";
+      result = await encodeImageBuffer(buf, fallbackMime, preserveTransparency, opacity);
+    } else if (u.startsWith("/uploads/") || u.startsWith("uploads/")) {
+      const localPath = resolveLocalUploadPath(u);
+      if (localPath) {
         try {
-          let sharpInstance = sharp(buf);
-          if (opacity < 1.0) {
-            const alphaByte = Math.max(0, Math.min(255, Math.round(opacity * 255)));
-            sharpInstance = sharpInstance.ensureAlpha().composite([
-              {
-                input: Buffer.from([255, 255, 255, alphaByte]),
-                raw: { width: 1, height: 1, channels: 4 },
-                tile: true,
-                blend: "dest-in",
-              },
-            ]);
-          }
-          const processedBuffer = await sharpInstance
-            .png({ quality: 100, compressionLevel: 6, adaptiveFiltering: true })
-            .toBuffer();
-          result = `data:image/png;base64,${processedBuffer.toString("base64")}`;
-        } catch (sharpError) {
-          logger.warn(
-            "Sharp processing failed, falling back to direct conversion",
-            {
-              component: "invoiceGenerator",
-              error: sharpError?.message,
-            }
+          const buf = await fs.promises.readFile(localPath);
+          const ext = path.extname(localPath).toLowerCase();
+          const fallbackMime =
+            ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+          result = await encodeImageBuffer(
+            buf,
+            fallbackMime,
+            preserveTransparency,
+            opacity
           );
-          const ct = (res.headers["content-type"] || "").toLowerCase();
-          const mime = ct.includes("png")
-            ? "image/png"
-            : ct.includes("webp")
-            ? "image/webp"
-            : "image/jpeg";
-          result = `data:${mime};base64,${buf.toString("base64")}`;
-        }
-      } else {
-        const ct = (res.headers["content-type"] || "").toLowerCase();
-        const mime = ct.includes("png")
-          ? "image/png"
-          : ct.includes("webp")
-          ? "image/webp"
-          : "image/jpeg";
-        result = `data:${mime};base64,${buf.toString("base64")}`;
-      }
-    } else if (u.startsWith("/uploads")) {
-      const localPath = path.join(process.cwd(), "public", u);
-      try {
-        const buf = await fs.promises.readFile(localPath);
-        const ext = path.extname(localPath).toLowerCase();
-        const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
-        result = `data:${mime};base64,${buf.toString("base64")}`;
-      } catch (readErr) {
-        if (readErr?.code !== "ENOENT") {
-          logger.debug("Local logo read error", { error: readErr?.message });
+        } catch (readErr) {
+          if (readErr?.code !== "ENOENT") {
+            logger.debug("Local logo read error", { error: readErr?.message });
+          }
         }
       }
     }

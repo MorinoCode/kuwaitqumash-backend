@@ -12,6 +12,7 @@ import {
 import {
   drawInvoiceHeaderSection,
   drawInvoiceFooterSection,
+  fitLogoDimensions,
 } from "./invoicePdfSections.js";
 
 export const generateInvoicePDF = async (
@@ -86,16 +87,21 @@ export const generateInvoicePDF = async (
 
       if (logoBase64Watermark) {
         try {
-          const logoSize = 50;
-          const watermarkX = (pageW - logoSize) / 2;
-          const watermarkY = (pageH - logoSize) / 2;
+          const { width: wmW, height: wmH } = fitLogoDimensions(
+            doc,
+            logoBase64Watermark,
+            55,
+            55
+          );
+          const watermarkX = (pageW - wmW) / 2;
+          const watermarkY = (pageH - wmH) / 2;
           doc.addImage(
             logoBase64Watermark,
             "PNG",
             watermarkX,
             watermarkY,
-            logoSize,
-            logoSize,
+            wmW,
+            wmH,
             undefined,
             "FAST"
           );
@@ -730,7 +736,6 @@ export const generateInvoicePDF = async (
     y,
     brand,
     brandDark,
-    brandLight,
     invoice,
     user,
     storeSettings,

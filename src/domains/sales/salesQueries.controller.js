@@ -248,7 +248,7 @@ export const getInvoiceById = async (req, res) => {
         { model: InvoiceItem.schema(schema), as: "items" },
         { model: InvoicePayment.schema(schema), as: "payments" },
         { model: Customer.schema(schema), as: "customer" },
-        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone"] },
+        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone", "logo_url"] },
         {
           model: User.schema(schema),
           as: "creator",
@@ -296,7 +296,7 @@ export const getInvoicePDF = async (req, res) => {
         { model: InvoiceItem.schema(schema), as: "items" },
         { model: InvoicePayment.schema(schema), as: "payments" },
         { model: Customer.schema(schema), as: "customer" },
-        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone"] },
+        { model: Branch.schema(schema), as: "branch", attributes: ["id", "name", "location", "phone", "logo_url"] },
         {
           model: User.schema(schema),
           as: "creator",

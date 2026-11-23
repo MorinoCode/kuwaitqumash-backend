@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import sharp from "sharp";
 import {
   buildObjectKey,
+  deleteImage,
   deleteStoreFolder,
   extractObjectKeyFromUrl,
   getR2Config,
+  saveBranchLogo,
   saveImage,
 } from "./fileUpload.js";
 
@@ -63,6 +66,45 @@ test("deleteStoreFolder handles missing store or unconfigured R2 cleanly", async
     await deleteStoreFolder(null);
     await deleteStoreFolder("test-tenant");
   });
+});
+
+test("saveBranchLogo falls back to local /uploads storage when R2 is unconfigured and deleteImage removes it", async () => {
+  const saved = {
+    R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
+    R2_ENDPOINT: process.env.R2_ENDPOINT,
+    R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
+    R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
+    R2_BUCKET_NAME: process.env.R2_BUCKET_NAME,
+    R2_PUBLIC_URL: process.env.R2_PUBLIC_URL,
+  };
+  delete process.env.R2_ACCOUNT_ID;
+  delete process.env.R2_ENDPOINT;
+  delete process.env.R2_ACCESS_KEY_ID;
+  delete process.env.R2_SECRET_ACCESS_KEY;
+  delete process.env.R2_BUCKET_NAME;
+  delete process.env.R2_PUBLIC_URL;
+
+  const sampleWebp = await sharp({
+    create: { width: 120, height: 60, channels: 4, background: { r: 13, g: 148, b: 136, alpha: 1 } },
+  })
+    .webp()
+    .toBuffer();
+
+  let uploadedUrl = null;
+  try {
+    uploadedUrl = await saveBranchLogo({ buffer: sampleWebp }, "unit-test-store", 99);
+    assert.ok(uploadedUrl && uploadedUrl.startsWith("/uploads/"));
+    assert.ok(uploadedUrl.endsWith(".png"));
+  } finally {
+    if (uploadedUrl) {
+      await deleteImage(uploadedUrl);
+    }
+    await deleteStoreFolder("unit-test-store");
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 });
 
 

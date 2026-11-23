@@ -1,8 +1,11 @@
 import {
   makeWASocket,
   useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
+  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
 } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import path from "path";
@@ -10,6 +13,8 @@ import fs from "fs";
 import { pino } from "pino";
 import { Op } from "sequelize";
 import WhatsappConfig from "../domains/platform/whatsapp.config.model.js";
+import Tenant from "../domains/platform/tenant.model.js";
+import Branch from "../domains/store/branch.model.js";
 import { formatPhoneForWhatsApp } from "./phone.utils.js";
 import logger from "./logger.js";
 import {
@@ -18,8 +23,15 @@ import {
   publishWhatsAppStatusCache,
 } from "./whatsapp-status.js";
 import {
+  usePostgresAuthState,
+  clearPostgresAuthState,
+} from "./whatsappPgAuthState.js";
+import {
   sessions,
   sessionLastActivity,
+  reconnectTimers,
+  clearReconnectTimer,
+  extractConnectedPhone,
   saveSessionToRedis,
   deleteSessionFromRedis,
   touchSession,
@@ -39,9 +51,96 @@ export {
   closeAllWhatsAppSockets,
   getSessionStatus,
   getSocket,
+  extractConnectedPhone,
 };
 
-const VERSION_FETCH_TIMEOUT_MS = 15000;
+const VERSION_FETCH_TIMEOUT_MS = 10_000;
+const VERSION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const BASE_RECONNECT_DELAY_MS = 3_000;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
+let cachedWaVersion = null;
+let cachedWaVersionExpiresAt = 0;
+
+const isDbAuthStorageEnabled = () =>
+  String(process.env.WA_AUTH_STORAGE || "file").trim().toLowerCase() === "db";
+
+export const getReconnectDelayMs = (attempt = 1) => {
+  const safeAttempt = Math.max(1, Number(attempt) || 1);
+  return Math.min(
+    MAX_RECONNECT_DELAY_MS,
+    BASE_RECONNECT_DELAY_MS * 2 ** (safeAttempt - 1)
+  );
+};
+
+export const isTerminalDisconnectReason = (statusCode) =>
+  statusCode === DisconnectReason.loggedOut ||
+  statusCode === DisconnectReason.connectionReplaced ||
+  statusCode === DisconnectReason.badSession ||
+  statusCode === DisconnectReason.forbidden;
+
+const withTimeout = (promise, ms, label) => {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(label)), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+};
+
+const getCachedBaileysVersion = async () => {
+  if (cachedWaVersion && Date.now() < cachedWaVersionExpiresAt) {
+    return cachedWaVersion;
+  }
+
+  for (const fetcher of [fetchLatestBaileysVersion, fetchLatestWaWebVersion]) {
+    if (typeof fetcher !== "function") continue;
+    try {
+      const result = await withTimeout(
+        fetcher(),
+        VERSION_FETCH_TIMEOUT_MS,
+        "Fetching WhatsApp Web version timed out"
+      );
+      if (Array.isArray(result?.version) && result.version.length > 0) {
+        cachedWaVersion = result.version;
+        cachedWaVersionExpiresAt = Date.now() + VERSION_CACHE_TTL_MS;
+        return cachedWaVersion;
+      }
+    } catch (err) {
+      logger.warn("WhatsApp Web version fetch failed, trying fallback", {
+        component: "whatsapp",
+        error: err?.message,
+      });
+    }
+  }
+
+  return cachedWaVersion || undefined;
+};
+
+const enableBranchInvoiceWhatsappOnPair = async (tenantSlug, branchId = null) => {
+  try {
+    const tenant = await Tenant.findOne({
+      where: { slug: tenantSlug },
+      attributes: ["db_schema"],
+    });
+    if (!tenant?.db_schema) return;
+    const where =
+      branchId !== null && branchId !== undefined ? { id: Number(branchId) } : {};
+    await Branch.schema(tenant.db_schema).update(
+      { whatsapp_invoice_enabled: true },
+      { where }
+    );
+  } catch (err) {
+    logger.warn("Auto-enable whatsapp_invoice_enabled on pair skipped", {
+      component: "whatsapp",
+      tenantSlug,
+      branchId,
+      error: err?.message,
+    });
+  }
+};
 
 const ensureWhatsappConfig = async (tenantSlug, branchId = null) => {
   try {
@@ -131,6 +230,7 @@ export const connectToWhatsApp = async (
   const {
     isRestart = false,
     restartRetry = 0,
+    reconnectAttempt = 0,
     branchId = null,
     wasQrPaired = false,
   } = options;
@@ -141,7 +241,8 @@ export const connectToWhatsApp = async (
     logger.error(msg, { component: "whatsapp", tenantSlug, branchId, ...ctx });
 
   try {
-    log("connectToWhatsApp start", { isRestart, restartRetry });
+    log("connectToWhatsApp start", { isRestart, restartRetry, reconnectAttempt });
+    clearReconnectTimer(sessionKey);
 
     const existingSock = sessions.get(sessionKey);
     if (existingSock) {
@@ -158,38 +259,39 @@ export const connectToWhatsApp = async (
     const sessionDir = getSessionDir(sessionKey);
     await ensureWhatsappConfig(tenantSlug, branchId);
 
-    if (!fs.existsSync(sessionDir)) {
-      fs.mkdirSync(sessionDir, { recursive: true });
-      log("session dir created", { sessionDir });
+    const useDbAuth = isDbAuthStorageEnabled();
+    let authState;
+    if (useDbAuth) {
+      authState = await usePostgresAuthState(sessionKey);
+      log("auth state loaded from PostgreSQL", { sessionKey });
+    } else {
+      await fs.promises.mkdir(sessionDir, { recursive: true });
+      authState = await useMultiFileAuthState(sessionDir);
+      log("auth state loaded from disk", { sessionDir });
     }
-    const authState = await useMultiFileAuthState(sessionDir);
     const { state, saveCreds } = authState;
 
-    log("auth state loaded", { sessionDir });
-
-    const versionPromise = fetchLatestBaileysVersion();
-    let timeoutId;
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(
-        () => reject(new Error("Fetching Baileys version timed out")),
-        VERSION_FETCH_TIMEOUT_MS
-      );
-    });
-    const { version } = await Promise.race([versionPromise, timeoutPromise]).finally(() => {
-      if (timeoutId) clearTimeout(timeoutId);
-    });
-    log("Baileys version fetched", {
-      version: version?.join?.(".") || String(version),
+    const version = await getCachedBaileysVersion();
+    log("Baileys version resolved", {
+      version: version?.join?.(".") || "bundled-default",
     });
 
+    const baileysLogger = pino({ level: "silent" });
     const sock = makeWASocket({
-      version,
-      logger: pino({ level: "silent" }),
-      printQRInTerminal: false,
-      auth: state,
-      getMessage: async () => undefined,
-      browser: ["Chrome (Linux)", "Chrome", "120.0"],
+      ...(version ? { version } : {}),
+      logger: baileysLogger,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
+      },
+      browser: Browsers.ubuntu("Qummash"),
+      markOnlineOnConnect: false,
       syncFullHistory: false,
+      shouldSyncHistoryMessage: () => false,
+      connectTimeoutMs: 60_000,
+      defaultQueryTimeoutMs: 60_000,
+      keepAliveIntervalMs: 30_000,
+      getMessage: async () => undefined,
     });
     log("makeWASocket created");
 
@@ -204,12 +306,14 @@ export const connectToWhatsApp = async (
       timestamp: Date.now(),
     });
 
-    sock.ev.on("creds.update", (...args) => {
+    sock.ev.on("creds.update", async (...args) => {
       try {
-        saveCreds(...args);
+        await saveCreds(...args);
       } catch (e) {
         logger.warn("saveCreds error", {
           component: "whatsapp",
+          tenantSlug,
+          branchId,
           error: e?.message,
         });
       }
@@ -246,6 +350,7 @@ export const connectToWhatsApp = async (
             hasConnected,
             isRestart,
             restartRetry,
+            reconnectAttempt,
             errMsg,
             errPayload,
           });
@@ -255,7 +360,7 @@ export const connectToWhatsApp = async (
 
           const isRestartRequired =
             statusCode === DisconnectReason.restartRequired;
-          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+          const isTerminal = isTerminalDisconnectReason(statusCode);
           const isReplaced = statusCode === DisconnectReason.connectionReplaced;
 
           if (isRestartRequired) {
@@ -272,6 +377,7 @@ export const connectToWhatsApp = async (
               connectToWhatsApp(tenantSlug, socketCallback, {
                 isRestart: true,
                 restartRetry: 0,
+                reconnectAttempt: 0,
                 branchId,
                 wasQrPaired: sawQrInAttempt || wasQrPaired,
               }).catch((err) => {
@@ -284,12 +390,15 @@ export const connectToWhatsApp = async (
                   data: err?.message || "Restart failed. Try Connect again.",
                 });
               });
-            setTimeout(doRestart, 800);
+            reconnectTimers.set(sessionKey, setTimeout(doRestart, 800));
             return;
           }
 
-          if (isLoggedOut || isReplaced) {
+          if (isTerminal) {
             try {
+              if (useDbAuth) {
+                await clearPostgresAuthState(sessionKey);
+              }
               await fs.promises.rm(sessionDir, { recursive: true, force: true });
             } catch (cleanupError) {
               logErr("Session cleanup failed", {
@@ -310,6 +419,7 @@ export const connectToWhatsApp = async (
                 connectToWhatsApp(tenantSlug, socketCallback, {
                   isRestart: false,
                   restartRetry: 0,
+                  reconnectAttempt: 0,
                   branchId,
                 }).catch((err) => {
                   logErr("Fresh QR restart failed", { error: err?.message });
@@ -318,7 +428,7 @@ export const connectToWhatsApp = async (
                     data: err?.message || "Failed to generate QR code.",
                   });
                 });
-              setTimeout(doFreshStart, 500);
+              reconnectTimers.set(sessionKey, setTimeout(doFreshStart, 500));
               return;
             }
 
@@ -329,19 +439,41 @@ export const connectToWhatsApp = async (
             return;
           }
 
-          if (hasConnected) {
-            log("session dropped (was connected), reconnecting");
+          if (hasConnected || reconnectAttempt > 0) {
             sessions.delete(sessionKey);
             await deleteSessionFromRedis(sessionKey);
-            connectToWhatsApp(tenantSlug, socketCallback, { branchId }).catch(
-              (err) => {
-                logErr("reconnect failed", { error: err?.message });
-                safeCallback(socketCallback, {
-                  type: "error",
-                  data: err?.message || "Reconnect failed.",
+            const nextAttempt = hasConnected ? 1 : reconnectAttempt + 1;
+            if (nextAttempt > MAX_RECONNECT_ATTEMPTS) {
+              logErr("Max WhatsApp reconnect attempts reached, pausing auto-reconnect", {
+                maxAttempts: MAX_RECONNECT_ATTEMPTS,
+                statusCode,
+              });
+              safeCallback(socketCallback, {
+                type: "closed",
+                data: "WhatsApp disconnected repeatedly. Please reconnect manually.",
+              });
+              return;
+            }
+
+            const delayMs = getReconnectDelayMs(nextAttempt);
+            log("session dropped, scheduling exponential-backoff reconnect", {
+              nextAttempt,
+              delayMs,
+              statusCode,
+            });
+            const timer = setTimeout(() => {
+              reconnectTimers.delete(sessionKey);
+              connectToWhatsApp(tenantSlug, null, {
+                branchId,
+                reconnectAttempt: nextAttempt,
+              }).catch((err) => {
+                logErr("backoff reconnect failed", {
+                  nextAttempt,
+                  error: err?.message,
                 });
-              }
-            );
+              });
+            }, delayMs);
+            reconnectTimers.set(sessionKey, timer);
             return;
           }
 
@@ -353,6 +485,7 @@ export const connectToWhatsApp = async (
               connectToWhatsApp(tenantSlug, socketCallback, {
                 isRestart: true,
                 restartRetry: 1,
+                reconnectAttempt: 0,
                 branchId,
               }).catch((err) => {
                 logErr("restart retry failed", { error: err?.message });
@@ -361,7 +494,7 @@ export const connectToWhatsApp = async (
                   data: err?.message || "Restart failed. Try Connect again.",
                 });
               });
-            setTimeout(doRetry, 500);
+            reconnectTimers.set(sessionKey, setTimeout(doRetry, 1000));
             return;
           }
 
@@ -379,9 +512,9 @@ export const connectToWhatsApp = async (
 
         if (connection === "open") {
           hasConnected = true;
-          const uid = sock.user?.id;
-          const phoneConnected = typeof uid === "string" ? uid.split(":")[0] : null;
-          log("connection open", { user: uid });
+          clearReconnectTimer(sessionKey);
+          const phoneConnected = extractConnectedPhone(sock.user);
+          log("connection open", { user: sock.user?.id, phoneConnected });
           await safeUpdateConfig(
             tenantSlug,
             "CONNECTED",
@@ -390,6 +523,7 @@ export const connectToWhatsApp = async (
           );
           if (sawQrInAttempt || wasQrPaired) {
             await markWhatsAppPairedNow(tenantSlug, branchId);
+            await enableBranchInvoiceWhatsappOnPair(tenantSlug, branchId);
           }
           await publishWhatsAppStatusCache(tenantSlug, branchId, {
             status: "CONNECTED",
@@ -767,6 +901,7 @@ export const sendWhatsAppDocument = async (
 export const logoutWhatsApp = async (tenantSlug, branchId = null) => {
   try {
     const sessionKey = getSessionKey(tenantSlug, branchId);
+    clearReconnectTimer(sessionKey);
     const sock = sessions.get(sessionKey);
     if (sock) {
       try {
@@ -783,6 +918,9 @@ export const logoutWhatsApp = async (tenantSlug, branchId = null) => {
       await deleteSessionFromRedis(sessionKey);
     }
 
+    if (isDbAuthStorageEnabled()) {
+      await clearPostgresAuthState(sessionKey);
+    }
     const sessionDir = getSessionDir(sessionKey);
     await fs.promises.rm(sessionDir, { recursive: true, force: true });
 
