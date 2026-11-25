@@ -230,10 +230,10 @@ export const changePassword = async (req, res) => {
       return res.status(400).json({ message: "Current password is incorrect." });
     }
 
-    const hashedPassword = await bcrypt.hash(new_password, 10);
     const nextTokenVersion = (user.token_version ?? 0) + 1;
+    // Pass plaintext new_password; User model's beforeUpdate hook hashes it once.
     await user.update({
-      password: hashedPassword,
+      password: new_password,
       token_version: nextTokenVersion,
     });
     await invalidateAuthUserCache(schema, user.id);
